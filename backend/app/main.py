@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from .api import workflows, execute, logs
+from .api import workflows, execute, logs, edit_log, benchmarks
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +37,8 @@ app.add_middleware(
 app.include_router(workflows.router, prefix="/api/workflows", tags=["workflows"])
 app.include_router(execute.router, prefix="/api/execute", tags=["execute"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
+app.include_router(edit_log.router, prefix="/api/edit-log", tags=["edit-log"])
+app.include_router(benchmarks.router, prefix="/api/benchmarks", tags=["benchmarks"])
 
 
 @app.get("/")

@@ -38,7 +38,7 @@ export const ChatInput = () => {
         addTopologyTemplate(topoMatch.id, 400, 200);
         response = `Added ${topoMatch.name} topology template.`;
       } else {
-        response = 'Available: Centralized, Sequential, Hierarchical, P2P, Mesh, DAG, Cyclic';
+        response = 'Available: Centralized, Chain, Hierarchical, Mesh, Cycle';
       }
     }
     // Clear command

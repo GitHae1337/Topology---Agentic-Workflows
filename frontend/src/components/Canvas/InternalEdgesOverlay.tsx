@@ -30,9 +30,9 @@ const getConnectionPoint = (
   const baseX = agent.x;
   const baseY = agent.y;
 
-  // Sequential, P2P, Cyclic - LEFT/RIGHT positioning (horizontal)
+  // Chain, Cycle - LEFT/RIGHT positioning (horizontal)
   // From agent uses OUTPUT (right), To agent uses INPUT (left)
-  if (templateType === 'sequential' || templateType === 'p2p' || templateType === 'cyclic') {
+  if (templateType === 'chain' || templateType === 'cycle') {
     if (isFromAgent) {
       // Output dot on RIGHT side
       return { x: baseX + NODE_WIDTH, y: baseY + NODE_HEIGHT_CENTER, direction: 'right' };
@@ -201,9 +201,9 @@ export const InternalEdgesOverlay = ({ topologyTemplates, mousePos }: InternalEd
                 markerStart={isBidirectional ? `url(#arrow-reverse-${template.id})` : undefined}
               />
 
-              {/* Delete button - only for topologies with manual edge drawing (P2P, Cyclic, Sequential) */}
+              {/* Delete button - only for topologies with manual edge drawing (Chain, Cycle) */}
               {/* Centralized, Hierarchical, Mesh auto-connect edges, so deletion is not allowed */}
-              {(template.type === 'p2p' || template.type === 'cyclic' || template.type === 'sequential') && (
+              {(template.type === 'chain' || template.type === 'cycle') && (
                 <>
                   <circle
                     cx={midX}
@@ -244,8 +244,8 @@ export const InternalEdgesOverlay = ({ topologyTemplates, mousePos }: InternalEd
 
         if (!sourceAgent || !template) return null;
 
-        // Only show preview for manual connection topologies (sequential, p2p, cyclic)
-        if (template.type !== 'sequential' && template.type !== 'p2p' && template.type !== 'cyclic') {
+        // Only show preview for manual connection topologies (chain, cycle)
+        if (template.type !== 'chain' && template.type !== 'cycle') {
           return null;
         }
 

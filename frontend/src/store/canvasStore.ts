@@ -54,6 +54,36 @@ export interface CurrentChatState {
 }
 import { getTopologyDefinition, topologies } from '../constants/topologies';
 import { getNodeColor } from '../constants/nodeTypes';
+import { editLogApi } from '../api/editLog';
+import { useSessionStore } from './sessionStore';
+
+// Structural state captured per undo/redo step. Selection / drag / resize
+// transients are intentionally excluded — they are not meaningful "edits".
+export interface CanvasSnapshot {
+  nodes: Node[];
+  topologyTemplates: TopologyTemplate[];
+  connections: Connection[];
+}
+
+const MAX_HISTORY = 100;
+
+// Module-level helper for the per-mutation edit-log POST. Silent no-op when
+// no session is active (e.g. tests, hot reload before initSession runs).
+const logEdit = (
+  action: string,
+  payload: Record<string, unknown>,
+  undoStackDepth: number,
+): void => {
+  const sessionId = useSessionStore.getState().sessionId;
+  if (!sessionId) return;
+  editLogApi.appendEdit({
+    sessionId,
+    timestamp: new Date().toISOString(),
+    action,
+    payload,
+    undoStackDepth,
+  });
+};
 
 interface CanvasState {
   // Canvas data
@@ -76,6 +106,11 @@ interface CanvasState {
   connecting: string | null;
   connectingFrom: 'node' | 'template' | null;
   connectingFromPort: number | null;
+  // True when the user started the connection by clicking an INPUT dot
+  // (left side). Used to swap source/target at mouseup so the resulting
+  // edge is always output→input direction even when the user dragged from
+  // input to output.
+  connectingFromInput: boolean;
   internalConnecting: { agentId: string; templateId: string } | null;
 
   // Resize state
@@ -118,7 +153,9 @@ interface CanvasState {
   setSelectedTemplate: (id: string | null) => void;
 
   // Internal edge actions
-  addInternalEdge: (templateId: string, fromAgentId: string, toAgentId: string) => void;
+  // silent=true skips pushHistory + logEdit. Used by addAgentToTopology auto-connect
+  // so a single agent-add triggers exactly one undo entry, not one per edge.
+  addInternalEdge: (templateId: string, fromAgentId: string, toAgentId: string, silent?: boolean) => void;
   deleteInternalEdge: (templateId: string, edgeId: string) => void;
 
   // Connection actions
@@ -142,7 +179,7 @@ interface CanvasState {
   moveTopology: (id: string, x: number, y: number) => void;
 
   // Connection drawing actions
-  setConnecting: (id: string | null, fromType: 'node' | 'template' | null, fromPort?: number | null) => void;
+  setConnecting: (id: string | null, fromType: 'node' | 'template' | null, fromPort?: number | null, fromInput?: boolean) => void;
   setInternalConnecting: (state: { agentId: string; templateId: string } | null) => void;
 
   // Resize actions
@@ -179,6 +216,15 @@ interface CanvasState {
   // Utility
   getAgentsInTopology: (templateId: string) => Node[];
   clearCanvas: () => void;
+  resetForNewTrial: () => void;
+
+  // History / undo-redo
+  undoStack: CanvasSnapshot[];
+  redoStack: CanvasSnapshot[];
+  pushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  getUndoStackDepth: () => number;
 }
 
 const generateId = (prefix: string): string => `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -200,6 +246,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   connecting: null,
   connectingFrom: null,
   connectingFromPort: null,
+  connectingFromInput: false,
   internalConnecting: null,
   resizing: null,
   resizeStart: { x: 0, y: 0, width: 0, height: 0 },
@@ -215,6 +262,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     currentSessionId: null,
     lastWorkflowHash: '',
   },
+  undoStack: [],
+  redoStack: [],
 
   // Node actions
   addNode: (type, x, y) => {
@@ -247,16 +296,28 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       topologyRole: null,
       topologyColor: null,
     };
+    get().pushHistory();
     set({ nodes: [...nodes, newNode], selectedNode: newNode.id, selectedTemplate: null });
+    logEdit('add_node', { nodeId: newNode.id, type, x, y }, get().undoStack.length);
   },
 
   updateNode: (id, updates) => {
+    get().pushHistory();
     set({ nodes: get().nodes.map(n => n.id === id ? { ...n, ...updates } : n) });
+    logEdit('update_node', { nodeId: id, updates }, get().undoStack.length);
   },
 
   deleteNode: (id) => {
     const node = get().nodes.find(n => n.id === id);
     if (!node) return;
+
+    // Start/End are trial-permanent placeholders — refuse to delete.
+    if (node.type === 'start' || node.type === 'end') {
+      console.log(`[canvasStore] deleteNode refused for ${node.type} (${id})`);
+      return;
+    }
+
+    get().pushHistory();
 
     // Remove from topology edges if in a topology
     if (node.topologyId) {
@@ -278,6 +339,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       connections: get().connections.filter(c => c.from !== id && c.to !== id),
       selectedNode: get().selectedNode === id ? null : get().selectedNode,
     });
+
+    logEdit(
+      'delete_node',
+      { nodeId: id, nodeType: node.type, nodeName: node.name },
+      get().undoStack.length,
+    );
   },
 
   setSelectedNode: (id) => set({ selectedNode: id, selectedNodes: id ? [id] : [], selectedTemplate: id ? null : get().selectedTemplate }),
@@ -339,18 +406,23 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       internalEdges: [],
       startAgentId: null,
     };
+    get().pushHistory();
     set({ topologyTemplates: [...get().topologyTemplates, newTemplate] });
+    logEdit('add_topology', { templateId: newTemplate.id, type, x, y }, get().undoStack.length);
   },
 
   updateTopologyTemplate: (id, updates) => {
+    get().pushHistory();
     set({
       topologyTemplates: get().topologyTemplates.map(t =>
         t.id === id ? { ...t, ...updates } : t
       ),
     });
+    logEdit('update_topology', { templateId: id, updates }, get().undoStack.length);
   },
 
   deleteTopologyTemplate: (id) => {
+    get().pushHistory();
     // Remove all agents from this topology
     set({
       nodes: get().nodes.map(n =>
@@ -362,12 +434,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       connections: get().connections.filter(c => c.from !== id && c.to !== id),
       selectedTemplate: get().selectedTemplate === id ? null : get().selectedTemplate,
     });
+    logEdit('delete_topology', { templateId: id }, get().undoStack.length);
   },
 
   setSelectedTemplate: (id) => set({ selectedTemplate: id, selectedNode: id ? null : get().selectedNode }),
 
   // Internal edge actions
-  addInternalEdge: (templateId, fromAgentId, toAgentId) => {
+  addInternalEdge: (templateId, fromAgentId, toAgentId, silent = false) => {
     const template = get().topologyTemplates.find(t => t.id === templateId);
     if (!template) return;
 
@@ -392,35 +465,36 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (wouldCreateCycle(fromAgentId, toAgentId, template.internalEdges)) {
         set({
           edgeError: {
-            message: 'Cannot form loops in Sequential topology',
-            details: 'Sequential topology requires a linear pipeline structure. Loops are not allowed.',
+            message: 'Cannot form loops in Chain topology',
+            details: 'Chain topology requires a linear pipeline structure. Loops are not allowed.',
           },
         });
         return;
       }
     }
 
-    // P2P constraint: each agent can connect to exactly 2 other agents
-    if (template.type === 'p2p') {
-      const countConnections = (agentId: string) => {
-        return template.internalEdges.filter(
-          e => e.from === agentId || e.to === agentId
-        ).length;
-      };
-
-      const fromConnections = countConnections(fromAgentId);
-      const toConnections = countConnections(toAgentId);
-
-      if (fromConnections >= 2 || toConnections >= 2) {
-        set({
-          edgeError: {
-            message: 'Connection limit reached in Peer-to-Peer topology',
-            details: 'Each agent can connect to exactly 2 other agents in P2P topology.',
-          },
-        });
-        return;
-      }
-    }
+    // 'p2p' deprecated for the 5-topology study; connection-limit guard kept for reference
+    // // P2P constraint: each agent can connect to exactly 2 other agents
+    // if (template.type === 'p2p') {
+    //   const countConnections = (agentId: string) => {
+    //     return template.internalEdges.filter(
+    //       e => e.from === agentId || e.to === agentId
+    //     ).length;
+    //   };
+    //
+    //   const fromConnections = countConnections(fromAgentId);
+    //   const toConnections = countConnections(toAgentId);
+    //
+    //   if (fromConnections >= 2 || toConnections >= 2) {
+    //     set({
+    //       edgeError: {
+    //         message: 'Connection limit reached in Peer-to-Peer topology',
+    //         details: 'Each agent can connect to exactly 2 other agents in P2P topology.',
+    //       },
+    //     });
+    //     return;
+    //   }
+    // }
 
     // Check if edge already exists (including reverse for bidirectional)
     const exists = template.internalEdges.find(e => e.from === fromAgentId && e.to === toAgentId);
@@ -439,14 +513,27 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       type: topo.edgeType,
     };
 
+    if (!silent) {
+      get().pushHistory();
+    }
+
     set({
       topologyTemplates: get().topologyTemplates.map(t =>
         t.id === templateId ? { ...t, internalEdges: [...template.internalEdges, newEdge] } : t
       ),
     });
+
+    if (!silent) {
+      logEdit(
+        'add_internal_edge',
+        { edgeId: newEdge.id, templateId, from: fromAgentId, to: toAgentId, edgeType: topo.edgeType },
+        get().undoStack.length,
+      );
+    }
   },
 
   deleteInternalEdge: (templateId, edgeId) => {
+    get().pushHistory();
     set({
       topologyTemplates: get().topologyTemplates.map(t =>
         t.id === templateId
@@ -454,6 +541,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           : t
       ),
     });
+    logEdit('delete_internal_edge', { templateId, edgeId }, get().undoStack.length);
   },
 
   // Connection actions
@@ -468,11 +556,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       fromType,
       fromPort,
     };
+    get().pushHistory();
     set({ connections: [...get().connections, newConnection] });
+    logEdit(
+      'add_connection',
+      { connectionId: newConnection.id, from, to, fromType, fromPort: fromPort ?? null },
+      get().undoStack.length,
+    );
   },
 
   deleteConnection: (id) => {
+    get().pushHistory();
     set({ connections: get().connections.filter(c => c.id !== id) });
+    logEdit('delete_connection', { connectionId: id }, get().undoStack.length);
   },
 
   // If/Else condition actions
@@ -487,6 +583,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       condition: '',
     };
 
+    get().pushHistory();
     set({
       nodes: get().nodes.map(n =>
         n.id === nodeId
@@ -494,6 +591,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           : n
       ),
     });
+    logEdit('add_condition', { nodeId, conditionId: newCondition.id }, get().undoStack.length);
   },
 
   updateCondition: (nodeId, conditionId, updates) => {
@@ -505,6 +603,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       c.id === conditionId ? { ...c, ...updates } : c
     );
 
+    get().pushHistory();
     set({
       nodes: get().nodes.map(n =>
         n.id === nodeId
@@ -512,6 +611,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           : n
       ),
     });
+    logEdit('update_condition', { nodeId, conditionId, updates }, get().undoStack.length);
   },
 
   deleteCondition: (nodeId, conditionId) => {
@@ -527,6 +627,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     // Also remove any connections from this port
     const portIndex = conditions.findIndex(c => c.id === conditionId);
 
+    get().pushHistory();
     set({
       nodes: get().nodes.map(n =>
         n.id === nodeId
@@ -535,6 +636,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       ),
       connections: get().connections.filter(c => !(c.from === nodeId && c.fromPort === portIndex)),
     });
+    logEdit('delete_condition', { nodeId, conditionId }, get().undoStack.length);
   },
 
   // Agent-topology actions
@@ -544,6 +646,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
     const topo = getTopologyDefinition(template.type);
     if (!topo) return;
+
+    // Single history push for this whole user-initiated action; the deferred
+    // auto-edges in setTimeout below run with silent=true so they coalesce
+    // into this same undo step.
+    get().pushHistory();
 
     // Handle Leader/Manager replacement: demote existing to Member/Worker
     let updatedNodes = get().nodes;
@@ -606,9 +713,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       }, 50);
     }
 
-    // Auto-connect for Sequential topology (chain by insertion order)
+    // Auto-connect for Chain topology (link by insertion order)
     // Connect the new agent to the end of the current chain
-    if (template.type === 'sequential') {
+    if (template.type === 'chain') {
       setTimeout(() => {
         const currentTemplate = get().topologyTemplates.find(t => t.id === templateId);
         if (!currentTemplate) return;
@@ -624,8 +731,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         const tailAgent = agentsInTopo.find(a => a.id !== agentId && !outgoingAgents.has(a.id));
 
         if (tailAgent) {
-          // Connect tail to the new agent
-          get().addInternalEdge(templateId, tailAgent.id, agentId);
+          // Connect tail to the new agent. silent=true: this auto-edge is part of
+          // the parent addAgentToTopology cognitive action, not its own undo step.
+          get().addInternalEdge(templateId, tailAgent.id, agentId, true);
         }
       }, 50);
     }
@@ -638,12 +746,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         if (topo.id === 'centralized') {
           if (role === 'Leader') {
             agentsInTopo.filter(a => a.topologyRole === 'Member').forEach(member => {
-              get().addInternalEdge(templateId, agentId, member.id);
+              get().addInternalEdge(templateId, agentId, member.id, true);
             });
           } else if (role === 'Member') {
             const leader = agentsInTopo.find(a => a.topologyRole === 'Leader');
             if (leader) {
-              get().addInternalEdge(templateId, leader.id, agentId);
+              get().addInternalEdge(templateId, leader.id, agentId, true);
             }
           }
         } else if (topo.id === 'hierarchical') {
@@ -652,39 +760,49 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           if (role === 'Manager') {
             // Connect Manager to all Workers
             workers.forEach(worker => {
-              get().addInternalEdge(templateId, agentId, worker.id);
+              get().addInternalEdge(templateId, agentId, worker.id, true);
             });
             // Connect Workers to each other
             for (let i = 0; i < workers.length; i++) {
               for (let j = i + 1; j < workers.length; j++) {
-                get().addInternalEdge(templateId, workers[i].id, workers[j].id);
+                get().addInternalEdge(templateId, workers[i].id, workers[j].id, true);
               }
             }
           } else if (role === 'Worker') {
             // Connect to Manager
             const manager = agentsInTopo.find(a => a.topologyRole === 'Manager');
             if (manager) {
-              get().addInternalEdge(templateId, manager.id, agentId);
+              get().addInternalEdge(templateId, manager.id, agentId, true);
             }
             // Connect to all other Workers
             workers.forEach(worker => {
-              get().addInternalEdge(templateId, agentId, worker.id);
+              get().addInternalEdge(templateId, agentId, worker.id, true);
             });
           }
         }
       }, 100);
     }
+
+    // Single high-level log entry for the user's action. Auto-edges fired by
+    // the setTimeouts above modify state silently and appear in the same
+    // history snapshot that pushHistory() captured at function start.
+    logEdit(
+      'add_agent_to_topology',
+      { agentId, templateId, role, topologyType: template.type },
+      get().undoStack.length,
+    );
   },
 
   removeAgentFromTopology: (agentId) => {
     const agent = get().nodes.find(n => n.id === agentId);
     if (!agent || !agent.topologyId) return;
 
-    const templateId = agent.topologyId;
+    const fromTemplateId = agent.topologyId;
 
+    get().pushHistory();
     set({
       topologyTemplates: get().topologyTemplates.map(t =>
-        t.id === templateId
+        t.id === fromTemplateId
           ? {
               ...t,
               internalEdges: t.internalEdges.filter(e => e.from !== agentId && e.to !== agentId),
@@ -698,6 +816,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           : n
       ),
     });
+    logEdit(
+      'remove_agent_from_topology',
+      { agentId, fromTemplateId },
+      get().undoStack.length,
+    );
   },
 
   // Drag actions
@@ -728,7 +851,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   // Connection drawing actions
-  setConnecting: (id, fromType, fromPort = null) => set({ connecting: id, connectingFrom: fromType, connectingFromPort: fromPort }),
+  setConnecting: (id, fromType, fromPort = null, fromInput = false) => set({ connecting: id, connectingFrom: fromType, connectingFromPort: fromPort, connectingFromInput: fromInput }),
   setInternalConnecting: (state) => set({ internalConnecting: state }),
 
   // Resize actions
@@ -796,8 +919,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   },
 
   clearCanvas: () => {
+    // Preserve Start/End nodes (they're deletion-protected invariants per
+    // the trial UX spec) — only strip user-added agents/templates.
+    const preserved = get().nodes.filter(
+      (n) => n.type === 'start' || n.type === 'end'
+    );
+    console.log(`[canvasStore] clearCanvas: keeping ${preserved.length} start/end nodes`);
     set({
-      nodes: [],
+      nodes: preserved,
       topologyTemplates: [],
       connections: [],
       selectedNode: null,
@@ -805,4 +934,142 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       chatMessages: [],
     });
   },
+
+  // Reset to a clean trial-start state: Start + End placeholder, empty
+  // templates/edges, empty undo/redo stacks, default workflow name. Used by
+  // ResearcherLanding when beginning a new (participant, task) trial.
+  resetForNewTrial: () => {
+    console.log('[canvasStore] resetForNewTrial: clearing state for new trial');
+    set({
+      nodes: [
+        { id: 'start-1', type: 'start', x: 100, y: 80, name: 'Start', config: {}, topologyId: null, topologyRole: null, topologyColor: null },
+        { id: 'end-1', type: 'end', x: 700, y: 80, name: 'End', config: {}, topologyId: null, topologyRole: null, topologyColor: null }
+      ],
+      topologyTemplates: [],
+      connections: [],
+      selectedNode: null,
+      selectedNodes: [],
+      selectedTemplate: null,
+      undoStack: [],
+      redoStack: [],
+      workflowName: 'New agent',
+      chatMessages: [],
+      // currentChat is the actual state ChatPanel reads (messages + log).
+      // chatMessages alone isn't enough — clear it here too so a new trial
+      // starts with empty chat / log.
+      currentChat: {
+        messages: [],
+        logEntries: [],
+        workflowId: null,
+        currentSessionId: null,
+        lastWorkflowHash: '',
+      },
+    });
+  },
+
+  // History / undo-redo
+  // pushHistory must be called BEFORE applying any structural mutation, so the
+  // captured snapshot represents the pre-mutation state we can revert to.
+  pushHistory: () => {
+    const { nodes, topologyTemplates, connections, undoStack } = get();
+    const snapshot: CanvasSnapshot = {
+      nodes: nodes.map(n => ({ ...n, config: { ...n.config } })),
+      topologyTemplates: topologyTemplates.map(t => ({
+        ...t,
+        internalEdges: t.internalEdges.map(e => ({ ...e })),
+      })),
+      connections: connections.map(c => ({ ...c })),
+    };
+
+    const next = [...undoStack, snapshot];
+    if (next.length > MAX_HISTORY) {
+      next.splice(0, next.length - MAX_HISTORY);
+    }
+
+    // Any new structural action invalidates the redo path.
+    set({ undoStack: next, redoStack: [] });
+  },
+
+  undo: () => {
+    const { undoStack, redoStack, nodes, topologyTemplates, connections } = get();
+    if (undoStack.length === 0) {
+      console.log('[canvasStore] undo: stack empty');
+      return;
+    }
+
+    const snapshot = undoStack[undoStack.length - 1];
+    const newUndoStack = undoStack.slice(0, -1);
+
+    // Save current state into redoStack before restoring.
+    const currentSnapshot: CanvasSnapshot = {
+      nodes: nodes.map(n => ({ ...n, config: { ...n.config } })),
+      topologyTemplates: topologyTemplates.map(t => ({
+        ...t,
+        internalEdges: t.internalEdges.map(e => ({ ...e })),
+      })),
+      connections: connections.map(c => ({ ...c })),
+    };
+
+    set({
+      nodes: snapshot.nodes,
+      topologyTemplates: snapshot.topologyTemplates,
+      connections: snapshot.connections,
+      undoStack: newUndoStack,
+      redoStack: [...redoStack, currentSnapshot],
+    });
+
+    console.log(`[canvasStore] undo applied. depth=${newUndoStack.length}`);
+
+    const sessionId = useSessionStore.getState().sessionId;
+    if (sessionId) {
+      editLogApi.appendEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        eventType: 'undo',
+        payload: { undoStackDepth: newUndoStack.length },
+      });
+    }
+  },
+
+  redo: () => {
+    const { undoStack, redoStack, nodes, topologyTemplates, connections } = get();
+    if (redoStack.length === 0) {
+      console.log('[canvasStore] redo: stack empty');
+      return;
+    }
+
+    const snapshot = redoStack[redoStack.length - 1];
+    const newRedoStack = redoStack.slice(0, -1);
+
+    const currentSnapshot: CanvasSnapshot = {
+      nodes: nodes.map(n => ({ ...n, config: { ...n.config } })),
+      topologyTemplates: topologyTemplates.map(t => ({
+        ...t,
+        internalEdges: t.internalEdges.map(e => ({ ...e })),
+      })),
+      connections: connections.map(c => ({ ...c })),
+    };
+
+    set({
+      nodes: snapshot.nodes,
+      topologyTemplates: snapshot.topologyTemplates,
+      connections: snapshot.connections,
+      undoStack: [...undoStack, currentSnapshot],
+      redoStack: newRedoStack,
+    });
+
+    console.log(`[canvasStore] redo applied. redo-depth=${newRedoStack.length}`);
+
+    const sessionId = useSessionStore.getState().sessionId;
+    if (sessionId) {
+      editLogApi.appendEvent({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        eventType: 'redo',
+        payload: { redoStackDepth: newRedoStack.length },
+      });
+    }
+  },
+
+  getUndoStackDepth: () => get().undoStack.length,
 }));

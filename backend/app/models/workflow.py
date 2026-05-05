@@ -72,6 +72,7 @@ class WorkflowDefinition(BaseModel):
     topologies: List[TopologyConfig] = Field(default_factory=list, description="All topology templates")
     connections: List[WorkflowConnection] = Field(default_factory=list, description="Workflow-level connections")
     nodes: List[WorkflowNode] = Field(default_factory=list, description="All workflow nodes (start, end, ifelse, approval)")
+    session_id: Optional[str] = Field(default=None, description="Trial session id that produced this workflow")
     created_at: Optional[datetime] = Field(default=None, description="Creation timestamp")
     updated_at: Optional[datetime] = Field(default=None, description="Last update timestamp")
 
@@ -95,6 +96,7 @@ class WorkflowCreate(BaseModel):
     topologies: List[TopologyConfig] = Field(default_factory=list)
     connections: List[WorkflowConnection] = Field(default_factory=list)
     nodes: List[WorkflowNode] = Field(default_factory=list)
+    session_id: Optional[str] = Field(default=None, description="Trial session id from the researcher panel")
 
 
 class WorkflowUpdate(BaseModel):
@@ -105,6 +107,7 @@ class WorkflowUpdate(BaseModel):
     topologies: Optional[List[TopologyConfig]] = None
     connections: Optional[List[WorkflowConnection]] = None
     nodes: Optional[List[WorkflowNode]] = None
+    session_id: Optional[str] = Field(default=None, description="Trial session id from the researcher panel")
 
 
 class ConversationMessage(BaseModel):
@@ -117,6 +120,13 @@ class ExecutionRequest(BaseModel):
     """Request model for executing a workflow."""
 
     input: str = Field(..., description="User input message")
+    task_id: Optional[str] = Field(
+        default=None,
+        description="Active TravelPlanner task_id; if set and matches a Korean "
+                    "translation entry, the backend prepends Korean reference "
+                    "data (transportation/accommodations/restaurants/attractions) "
+                    "to the input so the LLM uses Korean names."
+    )
     history: List[ConversationMessage] = Field(
         default_factory=list,
         description="Previous conversation history for context"

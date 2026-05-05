@@ -5,12 +5,12 @@ from enum import Enum
 
 class TopologyType(str, Enum):
     CENTRALIZED = "centralized"
-    SEQUENTIAL = "sequential"
+    CHAIN = "chain"
     HIERARCHICAL = "hierarchical"
-    P2P = "p2p"
+    # P2P = "p2p"  # deprecated for the 5-topology study
     MESH = "mesh"
-    DAG = "dag"
-    CYCLIC = "cyclic"
+    # DAG = "dag"  # deprecated for the 5-topology study
+    CYCLE = "cycle"
 
 
 class EdgeType(str, Enum):
@@ -41,19 +41,19 @@ class TopologyConfig(BaseModel):
     max_turns: int = Field(default=3, ge=1, le=100, description="Maximum rounds")
     timeout: int = Field(default=180, ge=30, description="Execution timeout in seconds")
     early_termination: bool = Field(default=True, description="Stop when completion detected")
-    start_agent_id: Optional[str] = Field(default=None, description="Start agent for P2P/Mesh/Cyclic")
+    start_agent_id: Optional[str] = Field(default=None, description="Start agent for Mesh/Cycle")
 
     @property
     def edge_type(self) -> EdgeType:
         """Get the edge type for this topology type."""
-        if self.type in [TopologyType.CENTRALIZED, TopologyType.HIERARCHICAL, TopologyType.P2P, TopologyType.MESH]:
+        if self.type in [TopologyType.CENTRALIZED, TopologyType.HIERARCHICAL, TopologyType.MESH]:
             return EdgeType.BIDIRECTIONAL
         return EdgeType.UNIDIRECTIONAL
 
     @property
     def needs_start_agent(self) -> bool:
         """Check if this topology requires a start agent to be specified."""
-        return self.type in [TopologyType.P2P, TopologyType.MESH, TopologyType.CYCLIC]
+        return self.type in [TopologyType.MESH, TopologyType.CYCLE]
 
     class Config:
         json_schema_extra = {

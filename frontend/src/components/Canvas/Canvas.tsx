@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
-import { useCanvasStore } from '../../store';
+import { useCanvasStore, useSessionStore } from '../../store';
 import { ConnectionsLayer } from './ConnectionsLayer';
 import { InternalEdgesOverlay } from './InternalEdgesOverlay';
 import { CanvasNode } from '../Node/CanvasNode';
@@ -172,6 +172,13 @@ export const Canvas = ({ mode = 'canvas' }: CanvasProps) => {
     setInternalConnecting(null);
   };
 
+  // Time-to-First-Action capture. Runs on the FIRST mousedown OR drop anywhere
+  // inside the canvas (including child nodes / topologies via capture phase).
+  // markFirstClick is internally idempotent — only the first call is recorded.
+  const handleFirstInteractionCapture = useCallback(() => {
+    useSessionStore.getState().markFirstClick();
+  }, []);
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
@@ -209,8 +216,10 @@ export const Canvas = ({ mode = 'canvas' }: CanvasProps) => {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
       onClick={handleCanvasClick}
+      onMouseDownCapture={handleFirstInteractionCapture}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onDropCapture={handleFirstInteractionCapture}
     >
       {/* Topology Templates (without internal edges) */}
       {topologyTemplates.map(template => (

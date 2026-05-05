@@ -25,6 +25,7 @@ class MeshExecutor(BaseTopologyExecutor):
         topology: TopologyConfig,
         agents: Dict[str, AgentConfig],
         input_message: str,
+        conversation_history: List[Dict[str, str]] = None,
     ) -> AsyncGenerator[ExecutionMessage, None]:
         logger.info(f"Starting mesh (debate) execution with {len(agents)} agents")
 

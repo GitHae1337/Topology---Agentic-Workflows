@@ -1,22 +1,22 @@
 from .base import BaseTopologyExecutor, TopologyResult
 from .centralized import CentralizedExecutor
-from .sequential import SequentialExecutor
+from .chain import ChainExecutor
 from .hierarchical import HierarchicalExecutor
-from .p2p import P2PExecutor
+# from .p2p import P2PExecutor  # deprecated for the 5-topology study
 from .mesh import MeshExecutor
-from .dag import DAGExecutor
-from .cyclic import CyclicExecutor
+# from .dag import DAGExecutor  # deprecated for the 5-topology study
+from .cycle import CycleExecutor
 
 __all__ = [
     "BaseTopologyExecutor",
     "TopologyResult",
     "CentralizedExecutor",
-    "SequentialExecutor",
+    "ChainExecutor",
     "HierarchicalExecutor",
-    "P2PExecutor",
+    # "P2PExecutor",  # deprecated for the 5-topology study
     "MeshExecutor",
-    "DAGExecutor",
-    "CyclicExecutor",
+    # "DAGExecutor",  # deprecated for the 5-topology study
+    "CycleExecutor",
 ]
 
 # Factory function to get executor by topology type
@@ -24,12 +24,12 @@ def get_executor(topology_type: str) -> BaseTopologyExecutor:
     """Get the appropriate executor for a topology type."""
     executors = {
         "centralized": CentralizedExecutor(),
-        "sequential": SequentialExecutor(),
+        "chain": ChainExecutor(),
         "hierarchical": HierarchicalExecutor(),
-        "p2p": P2PExecutor(),
+        # "p2p": P2PExecutor(),  # deprecated for the 5-topology study
         "mesh": MeshExecutor(),
-        "dag": DAGExecutor(),
-        "cyclic": CyclicExecutor(),
+        # "dag": DAGExecutor(),  # deprecated for the 5-topology study
+        "cycle": CycleExecutor(),
     }
     executor = executors.get(topology_type)
     if not executor:

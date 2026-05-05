@@ -19,17 +19,28 @@ DATABASE_PATH = "workflows.db"
 
 
 async def init_db():
-    """Initialize the SQLite database."""
+    """Initialize the SQLite database. Includes idempotent migration to add
+    session_id column to existing pre-E3 databases (the column links a saved
+    workflow to the trial session that produced it)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 data TEXT NOT NULL,
+                session_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+
+        # Idempotent migration: add session_id to legacy schemas that pre-date E3.
+        async with db.execute("PRAGMA table_info(workflows)") as cursor:
+            existing_cols = [row[1] async for row in cursor]
+        if "session_id" not in existing_cols:
+            logger.info("[init_db] migrating: adding session_id column to workflows")
+            await db.execute("ALTER TABLE workflows ADD COLUMN session_id TEXT")
+
         await db.commit()
     logger.info("Database initialized")
 
@@ -57,6 +68,7 @@ async def list_workflows():
             topologies=data.get("topologies", []),
             connections=data.get("connections", []),
             nodes=data.get("nodes", []),
+            session_id=row["session_id"] if "session_id" in row.keys() else None,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         ))
@@ -85,6 +97,7 @@ async def get_workflow(workflow_id: str):
         topologies=data.get("topologies", []),
         connections=data.get("connections", []),
         nodes=data.get("nodes", []),
+        session_id=row["session_id"] if "session_id" in row.keys() else None,
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
@@ -103,13 +116,15 @@ async def create_workflow(workflow: WorkflowCreate):
         "nodes": [n.model_dump() for n in workflow.nodes],
     }
 
+    logger.info(f"[create_workflow] id={workflow_id} session_id={workflow.session_id}")
+
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
             """
-            INSERT INTO workflows (id, name, data, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO workflows (id, name, data, session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (workflow_id, workflow.name, json.dumps(data), now.isoformat(), now.isoformat())
+            (workflow_id, workflow.name, json.dumps(data), workflow.session_id, now.isoformat(), now.isoformat())
         )
         await db.commit()
 
@@ -122,6 +137,7 @@ async def create_workflow(workflow: WorkflowCreate):
         topologies=workflow.topologies,
         connections=workflow.connections,
         nodes=workflow.nodes,
+        session_id=workflow.session_id,
         created_at=now,
         updated_at=now,
     )
@@ -141,6 +157,7 @@ async def update_workflow(workflow_id: str, workflow: WorkflowUpdate):
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     existing_data = json.loads(row["data"])
+    existing_session_id = row["session_id"] if "session_id" in row.keys() else None
     now = datetime.utcnow()
 
     # Update fields if provided
@@ -149,6 +166,10 @@ async def update_workflow(workflow_id: str, workflow: WorkflowUpdate):
     topologies = [t.model_dump() for t in workflow.topologies] if workflow.topologies is not None else existing_data.get("topologies", [])
     connections = [c.model_dump() for c in workflow.connections] if workflow.connections is not None else existing_data.get("connections", [])
     nodes = [n.model_dump() for n in workflow.nodes] if workflow.nodes is not None else existing_data.get("nodes", [])
+    # Only overwrite session_id if the request explicitly provided one. This
+    # preserves the original trial owner across mid-trial saves where the
+    # client may not re-send sessionId.
+    session_id = workflow.session_id if workflow.session_id is not None else existing_session_id
 
     data = {
         "agents": agents,
@@ -157,14 +178,16 @@ async def update_workflow(workflow_id: str, workflow: WorkflowUpdate):
         "nodes": nodes,
     }
 
+    logger.info(f"[update_workflow] id={workflow_id} session_id={session_id}")
+
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
             """
             UPDATE workflows
-            SET name = ?, data = ?, updated_at = ?
+            SET name = ?, data = ?, session_id = ?, updated_at = ?
             WHERE id = ?
             """,
-            (name, json.dumps(data), now.isoformat(), workflow_id)
+            (name, json.dumps(data), session_id, now.isoformat(), workflow_id)
         )
         await db.commit()
 
@@ -177,6 +200,7 @@ async def update_workflow(workflow_id: str, workflow: WorkflowUpdate):
         topologies=workflow.topologies if workflow.topologies is not None else [],
         connections=workflow.connections if workflow.connections is not None else [],
         nodes=workflow.nodes if workflow.nodes is not None else [],
+        session_id=session_id,
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=now,
     )

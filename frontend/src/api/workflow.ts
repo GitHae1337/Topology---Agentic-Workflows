@@ -9,6 +9,7 @@ interface WorkflowData {
   topologies: TopologyData[];
   connections: ConnectionData[];
   nodes: WorkflowNodeData[];
+  session_id?: string | null;
 }
 
 interface AgentData {
@@ -81,7 +82,8 @@ export const convertToApiFormat = (
   nodes: Node[],
   topologyTemplates: TopologyTemplate[],
   connections: Connection[],
-  workflowName: string = 'Untitled Workflow'
+  workflowName: string = 'Untitled Workflow',
+  sessionId: string | null = null,
 ): WorkflowData => {
   // Convert agents
   const agents: AgentData[] = nodes
@@ -152,6 +154,7 @@ export const convertToApiFormat = (
     topologies,
     connections: connectionData,
     nodes: workflowNodes,
+    session_id: sessionId,
   };
 };
 
@@ -212,13 +215,19 @@ export const executeApi = {
     onError: (error: Error) => void,
     onApprovalRequired?: (data: ApprovalRequiredData) => void,
     history?: ConversationMessage[],
+    taskId?: string | null,
   ): AbortController => {
     const controller = new AbortController();
 
     fetch(`${API_BASE}/execute/${workflowId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input, config_overrides: {}, history: history || [] }),
+      body: JSON.stringify({
+        input,
+        config_overrides: {},
+        history: history || [],
+        task_id: taskId || null,
+      }),
       signal: controller.signal,
     })
       .then(async (response) => {

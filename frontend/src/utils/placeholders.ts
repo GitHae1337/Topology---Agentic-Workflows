@@ -26,7 +26,7 @@ export const getPlaceholderConfig = (
         ],
       };
 
-    case 'sequential':
+    case 'chain':
       return {
         nodes: [
           { x: 50, y: centerY, label: '1st' },
@@ -52,19 +52,20 @@ export const getPlaceholderConfig = (
         ],
       };
 
-    case 'p2p':
-      return {
-        nodes: [
-          { x: centerX, y: 25, label: 'Peer' },
-          { x: centerX - 70, y: bodyH - 30, label: 'Peer' },
-          { x: centerX + 70, y: bodyH - 30, label: 'Peer' },
-        ],
-        edges: [
-          { from: 0, to: 1, bidirectional: true },
-          { from: 1, to: 2, bidirectional: true },
-          { from: 2, to: 0, bidirectional: true },
-        ],
-      };
+    // 'p2p' deprecated for the 5-topology study (kept commented for reference)
+    // case 'p2p':
+    //   return {
+    //     nodes: [
+    //       { x: centerX, y: 25, label: 'Peer' },
+    //       { x: centerX - 70, y: bodyH - 30, label: 'Peer' },
+    //       { x: centerX + 70, y: bodyH - 30, label: 'Peer' },
+    //     ],
+    //     edges: [
+    //       { from: 0, to: 1, bidirectional: true },
+    //       { from: 1, to: 2, bidirectional: true },
+    //       { from: 2, to: 0, bidirectional: true },
+    //     ],
+    //   };
 
     case 'mesh':
       return {
@@ -84,7 +85,7 @@ export const getPlaceholderConfig = (
         ],
       };
 
-    case 'cyclic':
+    case 'cycle':
       return {
         nodes: [
           { x: centerX, y: 25, label: 'A' },

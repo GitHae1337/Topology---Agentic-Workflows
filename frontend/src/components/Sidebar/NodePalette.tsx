@@ -1,7 +1,11 @@
 import { useState } from 'react';
-import { coreNodes, logicNodes } from '../../constants/nodeTypes';
+import { coreNodes } from '../../constants/nodeTypes';
 import { useCanvasStore } from '../../store';
 import { NodeDefinition } from '../../types';
+
+// Sidebar Core list. Start/End are auto-placed by resetForNewTrial and not
+// user-removable; the Logic palette (ifelse/approval) is hidden for the study.
+const VISIBLE_CORE_TYPES = new Set(['agent', 'note']);
 
 export const NodePalette = () => {
   const addNode = useCanvasStore(state => state.addNode);
@@ -41,26 +45,16 @@ export const NodePalette = () => {
 
   return (
     <>
-      {/* Core Nodes */}
+      {/* Core Nodes — Agent + Note only (Start/End not user-addable) */}
       <div className="mb-5">
         <span className="text-[11px] text-[#666] uppercase tracking-wider block mb-2">
           Core
         </span>
-        {coreNodes.map(node => (
+        {coreNodes.filter(node => VISIBLE_CORE_TYPES.has(node.type)).map(node => (
           <NodeItem key={node.type} node={node} />
         ))}
       </div>
-
-      {/* Logic Nodes */}
-      <div className="mb-5">
-        <span className="text-[11px] text-[#666] uppercase tracking-wider block mb-2">
-          Logic
-        </span>
-        {/* TODO: ifelse is hidden for now, will implement later */}
-        {logicNodes.filter(node => node.type !== 'ifelse').map(node => (
-          <NodeItem key={node.type} node={node} />
-        ))}
-      </div>
+      {/* Logic palette hidden for the study (ifelse / approval). */}
     </>
   );
 };

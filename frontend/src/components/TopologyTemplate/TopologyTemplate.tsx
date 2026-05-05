@@ -30,9 +30,12 @@ export const TopologyTemplate = ({ template, canvasRef, mode = 'canvas' }: Topol
   const hasAgents = getAgentsInTopology(template.id).length > 0;
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    // Don't start dragging if clicking on delete button or resize handle
+    // Don't start dragging if clicking on delete button, resize handle, or
+    // a connection dot (data-dot="true"). The dots have their own onMouseDown
+    // (output) or onMouseUp (input); template drag would hijack input dot.
     const target = e.target as HTMLElement;
     if (target.closest('.template-delete') || target.closest('.resize-handle')) return;
+    if (target?.dataset?.dot === 'true') return;
 
     e.stopPropagation();
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -70,20 +73,45 @@ export const TopologyTemplate = ({ template, canvasRef, mode = 'canvas' }: Topol
     });
   }, [template.id, template.width, template.height, setResizing, setResizeStart]);
 
-  const handleConnectionStart = useCallback((e: React.MouseEvent) => {
+  // Bidirectional connection drawing — start from either dot, but always
+  // canonicalize to output→input direction at mouseup (swap if started from
+  // an input dot). Mirrors the CanvasNode logic.
+  const handleConnectionStartFromOutput = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    setConnecting(template.id, 'template');
+    setConnecting(template.id, 'template', null, false);
+  }, [template.id, setConnecting]);
+
+  const handleConnectionStartFromInput = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConnecting(template.id, 'template', null, true);
   }, [template.id, setConnecting]);
 
   const connectingFromPort = useCanvasStore(state => state.connectingFromPort);
+  const connectingFromInput = useCanvasStore(state => state.connectingFromInput);
 
-  const handleConnectionEnd = useCallback((e: React.MouseEvent) => {
+  const handleConnectionEndAtInput = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (connecting && connecting !== template.id) {
+      if (connectingFromInput) {
+        setConnecting(null, null);
+        return;
+      }
       addConnection(connecting, template.id, 'template', connectingFromPort ?? undefined);
     }
     setConnecting(null, null);
-  }, [connecting, connectingFromPort, template.id, addConnection, setConnecting]);
+  }, [connecting, connectingFromPort, connectingFromInput, template.id, addConnection, setConnecting]);
+
+  const handleConnectionEndAtOutput = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (connecting && connecting !== template.id) {
+      if (!connectingFromInput) {
+        setConnecting(null, null);
+        return;
+      }
+      addConnection(template.id, connecting, 'template');
+    }
+    setConnecting(null, null);
+  }, [connecting, connectingFromInput, template.id, addConnection, setConnecting]);
 
   return (
     <div
@@ -128,15 +156,23 @@ export const TopologyTemplate = ({ template, canvasRef, mode = 'canvas' }: Topol
         {/* Internal edges are now rendered in Canvas via InternalEdgesOverlay */}
       </div>
 
-      {/* Connection dots - Input on left, Output on right */}
+      {/* Connection dots - Input on left, Output on right.
+          Both dots support mousedown (start) and mouseup (end). When the user
+          drags from input → output, source/target are swapped at mouseup so
+          stored direction is always output → input. */}
       <div
+        data-dot="true"
         className="absolute w-3 h-3 bg-[#404040] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -left-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
-        onMouseUp={handleConnectionEnd}
+        onMouseDown={handleConnectionStartFromInput}
+        onMouseUp={handleConnectionEndAtInput}
       />
       <div
+        data-dot="true"
         className="absolute w-3 h-3 bg-[#404040] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -right-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
-        onMouseDown={handleConnectionStart}
+        onMouseDown={handleConnectionStartFromOutput}
+        onMouseUp={handleConnectionEndAtOutput}
       />
+
 
       {/* Resize handle */}
       <div

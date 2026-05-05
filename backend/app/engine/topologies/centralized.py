@@ -123,7 +123,7 @@ Decompose the task now and assign subtasks to your sub-agents."""
 
         # Execute sub-agents in parallel
         round_results = await self._execute_agents_parallel(
-            member_agents, subtasks, agent_histories, current_round
+            member_agents, subtasks, agent_histories, current_round, input_message
         )
 
         # Yield messages for each agent response
@@ -194,7 +194,7 @@ What is your decision?"""
 
             # Execute sub-agents in parallel with their new tasks
             round_results = await self._execute_agents_parallel(
-                member_agents, subtasks, agent_histories, current_round
+                member_agents, subtasks, agent_histories, current_round, input_message
             )
 
             # Yield messages for each agent response
@@ -274,7 +274,8 @@ Synthesize all findings into a final, comprehensive answer to the original task.
         member_agents: List[AgentConfig],
         subtasks: Dict[str, str],
         agent_histories: Dict[str, List[str]],
-        current_round: int
+        current_round: int,
+        input_message: str,
     ) -> Dict[str, str]:
         """Execute all sub-agents in parallel with their assigned tasks."""
 
@@ -293,18 +294,22 @@ Synthesize all findings into a final, comprehensive answer to the original task.
                 ])
                 prompt = f"""You are a sub-agent following the orchestrator's instructions.
 
+Original task: {input_message}
+
 Your previous outputs:
 {previous_context}
 
-New task from orchestrator: {subtask}
+Subtask from orchestrator: {subtask}
 
-Execute this task and provide your response."""
+Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
             else:
                 prompt = f"""You are a sub-agent following the orchestrator's instructions.
 
-Task from orchestrator: {subtask}
+Original task: {input_message}
 
-Execute this task and provide your response."""
+Subtask from orchestrator: {subtask}
+
+Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
 
             response = await self.call_agent(
                 agent,

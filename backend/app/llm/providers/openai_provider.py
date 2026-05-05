@@ -88,7 +88,10 @@ class OpenAIService(LLMService):
                     "verbosity": "low"
                 },
                 reasoning={
-                    "effort": "none"
+                    # OpenAI deprecated 'none' for gpt-5; supported values are
+                    # 'minimal' / 'low' / 'medium' / 'high'. Use 'minimal' for
+                    # cheapest+fastest path (matches the previous 'none' intent).
+                    "effort": "minimal"
                 },
                 # HIDDEN: web search tool
                 # tools=[{"type": "web_search"}],
@@ -132,6 +135,9 @@ class OpenAIService(LLMService):
 
         logger.info(f"OpenAI response (new API): {len(content)} chars, usage={usage}")
 
+        from ...humaneval.cost_tracker import record_usage
+        record_usage(usage)
+
         return LLMResponse(
             content=content,
             model=model,
@@ -167,6 +173,9 @@ class OpenAIService(LLMService):
         }
 
         logger.info(f"OpenAI response (legacy API): {len(content)} chars, usage={usage}")
+
+        from ...humaneval.cost_tracker import record_usage
+        record_usage(usage)
 
         return LLMResponse(
             content=content,

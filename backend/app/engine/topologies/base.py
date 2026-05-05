@@ -61,6 +61,18 @@ class BaseTopologyExecutor(ABC):
 
         return "Previous conversation:\n" + "\n\n".join(history_parts) + "\n\n---\n\n"
 
+    def format_user_prompt_with_task(self, task: str, prior_context: str = "") -> str:
+        """Standardized user-prompt format that always includes the original task Q.
+
+        Per G-Designer (arXiv:2410.11782), every agent at every round should
+        receive the original task in addition to its in-neighbor outputs. This
+        helper unifies that format across topology executors so chain, mesh,
+        centralized, hierarchical, and cycle all expose Q to every agent.
+        """
+        if prior_context:
+            return f"Original task:\n{task}\n\n{prior_context}"
+        return f"Original task:\n{task}"
+
     async def call_agent(
         self,
         agent: AgentConfig,

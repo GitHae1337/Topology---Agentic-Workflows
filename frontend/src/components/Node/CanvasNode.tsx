@@ -36,6 +36,11 @@ export const CanvasNode = ({ node, canvasRef, mode = 'canvas' }: CanvasNodeProps
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    // Belt-and-suspenders: if mousedown originated from a connection dot
+    // (which has data-dot="true"), skip node drag. This catches cases where
+    // the dot's own stopPropagation didn't fire for whatever reason.
+    const target = e.target as HTMLElement;
+    if (target?.dataset?.dot === 'true') return;
     e.stopPropagation();
 
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -61,21 +66,53 @@ export const CanvasNode = ({ node, canvasRef, mode = 'canvas' }: CanvasNodeProps
     deleteNode(node.id);
   }, [node.id, deleteNode]);
 
-  // Workflow-level connection handlers
-  const handleConnectionStart = useCallback((e: React.MouseEvent) => {
+  // Workflow-level connection handlers.
+  // To support drawing connections in either direction (output→input OR
+  // input→output) but always store them in canonical output→input direction,
+  // we track which dot kind (input vs output) the user started from via
+  // `connectingFromInput` in the store, and swap source/target at mouseup
+  // when the start was an input dot.
+  const handleConnectionStartFromOutput = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    setConnecting(node.id, 'node');
+    setConnecting(node.id, 'node', null, false);
+  }, [node.id, setConnecting]);
+
+  const handleConnectionStartFromInput = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setConnecting(node.id, 'node', null, true);
   }, [node.id, setConnecting]);
 
   const connectingFromPort = useCanvasStore(state => state.connectingFromPort);
+  const connectingFromInput = useCanvasStore(state => state.connectingFromInput);
 
-  const handleConnectionEnd = useCallback((e: React.MouseEvent) => {
+  const handleConnectionEndAtInput = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     if (connecting && connecting !== node.id) {
+      if (connectingFromInput) {
+        // Both sides input → invalid (no direction). Skip.
+        setConnecting(null, null);
+        return;
+      }
+      // Normal: source = output side, target = this input.
       addConnection(connecting, node.id, 'node', connectingFromPort ?? undefined);
     }
     setConnecting(null, null);
-  }, [connecting, connectingFromPort, node.id, addConnection, setConnecting]);
+  }, [connecting, connectingFromPort, connectingFromInput, node.id, addConnection, setConnecting]);
+
+  const handleConnectionEndAtOutput = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (connecting && connecting !== node.id) {
+      if (!connectingFromInput) {
+        // Both sides output → invalid. Skip.
+        setConnecting(null, null);
+        return;
+      }
+      // Reversed: source dot was input, end is output → swap so canonical
+      // direction (output → input) is preserved.
+      addConnection(node.id, connecting, 'node');
+    }
+    setConnecting(null, null);
+  }, [connecting, connectingFromInput, node.id, addConnection, setConnecting]);
 
   // Internal topology connection handlers
   const handleInternalConnectionStart = useCallback((e: React.MouseEvent) => {
@@ -123,7 +160,8 @@ export const CanvasNode = ({ node, canvasRef, mode = 'canvas' }: CanvasNodeProps
         {node.topologyRole && (
           <span className="text-[9px] bg-white/15 px-1.5 py-0.5 rounded-lg">{node.topologyRole}</span>
         )}
-        {mode === 'canvas' && (
+        {/* Hide delete button on Start/End — those are trial-permanent. */}
+        {mode === 'canvas' && node.type !== 'start' && node.type !== 'end' && (
           <button
             className="bg-transparent border-none text-[#666] text-base cursor-pointer opacity-0 hover:opacity-100 hover:text-[#ef4444] transition-opacity"
             onClick={handleDelete}
@@ -146,12 +184,14 @@ export const CanvasNode = ({ node, canvasRef, mode = 'canvas' }: CanvasNodeProps
         <>
           {/* Internal input dot on left */}
           <div
+            data-dot="true"
             className="absolute w-3 h-3 bg-[#505050] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -left-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
             onMouseUp={handleInternalConnectionEnd}
             title="Connect from another agent"
           />
           {/* Internal output dot on right */}
           <div
+            data-dot="true"
             className="absolute w-3 h-3 bg-[#505050] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -right-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
             onMouseDown={handleInternalConnectionStart}
             title="Connect to another agent"
@@ -161,18 +201,24 @@ export const CanvasNode = ({ node, canvasRef, mode = 'canvas' }: CanvasNodeProps
 
       {/* Connection dots for nodes outside topology */}
       {/* Note nodes don't have connection dots - they're just annotations */}
-      {/* Output dot on the right (for non-end/non-note nodes) */}
+      {/* Output dot on the right (for non-end/non-note nodes) — both
+          mousedown (start) and mouseup (end if user dragged from input). */}
       {node.type !== 'end' && node.type !== 'note' && !node.topologyId && (
         <div
+          data-dot="true"
           className="absolute w-3 h-3 bg-[#404040] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -right-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
-          onMouseDown={handleConnectionStart}
+          onMouseDown={handleConnectionStartFromOutput}
+          onMouseUp={handleConnectionEndAtOutput}
         />
       )}
-      {/* Input dot on the left (for non-start/non-note nodes) */}
+      {/* Input dot on the left (for non-start/non-note nodes) — both
+          mousedown (start, will be swapped) and mouseup (normal end). */}
       {node.type !== 'start' && node.type !== 'note' && !node.topologyId && (
         <div
+          data-dot="true"
           className="absolute w-3 h-3 bg-[#404040] border-2 border-[#1f1f1f] rounded-full cursor-crosshair -left-1.5 top-1/2 -translate-y-1/2 z-10 hover:bg-[#6366f1] transition-colors"
-          onMouseUp={handleConnectionEnd}
+          onMouseDown={handleConnectionStartFromInput}
+          onMouseUp={handleConnectionEndAtInput}
         />
       )}
     </div>

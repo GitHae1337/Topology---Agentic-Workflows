@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useCanvasStore, ChatSession } from '../../store/canvasStore';
+import { useSessionStore } from '../../store';
 import { workflowApi, executeApi, convertToApiFormat, logsApi } from '../../api/workflow';
+import { parsePlan } from '../../utils/planParser';
+import { PlanCard } from './PlanCard';
 
 interface ApprovalData {
   execution_id: string;
@@ -36,6 +39,42 @@ export const ChatPanel = () => {
   const abortControllerRef = useRef<AbortController | null>(null);
   const chatIdRef = useRef<string | null>(null);
   const chatCreatedAtRef = useRef<string | null>(null);
+
+  // Resizable panel width — drag the left edge. Persisted to localStorage.
+  // Bounds: min 280px, max 40% of window width (so the canvas + topbar
+  // buttons stay usable).
+  const [chatWidth, setChatWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('mas_chat_width');
+    return saved ? parseInt(saved, 10) || 350 : 350;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const proposed = window.innerWidth - e.clientX;
+      const max = Math.floor(window.innerWidth * 0.4);
+      const min = 280;
+      const next = Math.max(min, Math.min(max, proposed));
+      setChatWidth(next);
+    };
+    const onUp = () => {
+      setIsResizing(false);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizing]);
+
+  // Save width to localStorage whenever it stabilizes (after resize ends).
+  useEffect(() => {
+    if (!isResizing) {
+      localStorage.setItem('mas_chat_width', String(chatWidth));
+    }
+  }, [chatWidth, isResizing]);
 
   // Get current chat state from store (persists across mode switches)
   const currentChat = useCanvasStore(state => state.currentChat);
@@ -248,7 +287,8 @@ export const ChatPanel = () => {
 
     // Save/update workflow first
     let currentWorkflowId = workflowId;
-    const workflowData = convertToApiFormat(nodes, topologyTemplates, connections, workflowName);
+    const trialSessionId = useSessionStore.getState().sessionId;
+    const workflowData = convertToApiFormat(nodes, topologyTemplates, connections, workflowName, trialSessionId);
 
     console.log('[ChatPanel] Saving workflow...');
 
@@ -343,6 +383,7 @@ export const ChatPanel = () => {
         setIsExecuting(false);
       },
       conversationHistory,
+      useSessionStore.getState().taskId,
     );
   };
 
@@ -541,7 +582,21 @@ export const ChatPanel = () => {
   };
 
   return (
-    <div className="w-[350px] bg-[#171717] border-l border-[#262626] flex flex-col relative">
+    <div
+      className="bg-[#171717] border-l border-[#262626] flex flex-col relative shrink-0"
+      style={{ width: `${chatWidth}px` }}
+    >
+      {/* Drag handle on the left edge — wider hit zone than visible bar. */}
+      <div
+        onMouseDown={(e) => {
+          e.preventDefault();
+          setIsResizing(true);
+        }}
+        className={`absolute -left-1 top-0 bottom-0 w-2 cursor-col-resize z-30 group`}
+        title="드래그해서 너비 조절"
+      >
+        <div className={`absolute left-1 top-0 bottom-0 w-px transition-colors ${isResizing ? 'bg-[#3b82f6]' : 'bg-transparent group-hover:bg-[#3b82f6]'}`} />
+      </div>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#262626]">
         {/* Chat/Log Toggle */}
@@ -677,32 +732,39 @@ export const ChatPanel = () => {
             </div>
           ) : (
             <div className="space-y-4">
-              {messages.map((msg) => (
-                msg.role === 'separator' ? (
-                  <div key={msg.id} className="flex items-center gap-2 py-2">
-                    <div className="flex-1 h-px bg-[#404040]" />
-                    <span className="text-[10px] text-[#666] px-2">Workflow changed</span>
-                    <div className="flex-1 h-px bg-[#404040]" />
-                  </div>
-                ) : (
+              {messages.map((msg) => {
+                if (msg.role === 'separator') {
+                  return (
+                    <div key={msg.id} className="flex items-center gap-2 py-2">
+                      <div className="flex-1 h-px bg-[#404040]" />
+                      <span className="text-[10px] text-[#666] px-2">Workflow changed</span>
+                      <div className="flex-1 h-px bg-[#404040]" />
+                    </div>
+                  );
+                }
+                // For assistant messages, try to extract a plan and render it
+                // as Korean day cards instead of the raw LLM output. Falls
+                // back to raw content if parsing fails.
+                const parsedPlan = msg.role === 'assistant' ? parsePlan(msg.content) : null;
+                return (
                   <div
                     key={msg.id}
                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
+                      className={`px-3 py-2 rounded-xl text-sm ${
                         msg.role === 'user'
-                          ? 'bg-[#3b82f6] text-white'
+                          ? 'max-w-[80%] bg-[#3b82f6] text-white'
                           : msg.role === 'system'
-                          ? 'bg-[#1a1a1a] text-[#888] border border-[#333]'
-                          : 'bg-[#262626] text-white'
+                          ? 'max-w-[85%] bg-[#1a1a1a] text-[#888] border border-[#333]'
+                          : 'max-w-[95%] w-full bg-[#262626] text-white'
                       }`}
                     >
-                      {msg.content}
+                      {parsedPlan ? <PlanCard plan={parsedPlan} /> : msg.content}
                     </div>
                   </div>
-                )
-              ))}
+                );
+              })}
               {/* Approval buttons */}
               {approvalPending && (
                 <div className="p-3 bg-[#262626] rounded-xl border border-[#404040]">

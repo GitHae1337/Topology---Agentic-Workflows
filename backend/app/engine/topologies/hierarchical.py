@@ -30,6 +30,7 @@ class HierarchicalExecutor(BaseTopologyExecutor):
         topology: TopologyConfig,
         agents: Dict[str, AgentConfig],
         input_message: str,
+        conversation_history: List[Dict[str, str]] = None,
     ) -> AsyncGenerator[ExecutionMessage, None]:
         logger.info(f"Starting hierarchical execution with {len(agents)} agents")
 
@@ -122,7 +123,7 @@ Decompose the task now and assign subtasks to your workers."""
 
         # Execute workers in parallel
         round_results = await self._execute_workers_parallel(
-            worker_agents, subtasks, agent_outputs, current_round
+            worker_agents, subtasks, agent_outputs, current_round, input_message
         )
 
         # Yield messages for each worker response
@@ -199,7 +200,7 @@ What is your decision?"""
 
                     peer_results = await self._execute_peer_discussion(
                         agent_a, agent_b, instruction,
-                        agent_tasks, agent_outputs, current_round
+                        agent_tasks, agent_outputs, current_round, input_message
                     )
 
                     # Yield peer discussion messages
@@ -228,7 +229,7 @@ What is your decision?"""
 
                 # Execute workers in parallel
                 round_results = await self._execute_workers_parallel(
-                    worker_agents, subtasks, agent_outputs, current_round
+                    worker_agents, subtasks, agent_outputs, current_round, input_message
                 )
 
                 # Yield messages for each worker response
@@ -348,7 +349,8 @@ Synthesize all findings into a final, comprehensive answer to the original task.
         worker_agents: List[AgentConfig],
         subtasks: Dict[str, str],
         agent_outputs: Dict[str, List[str]],
-        current_round: int
+        current_round: int,
+        input_message: str,
     ) -> Dict[str, str]:
         """Execute all workers in parallel with their assigned tasks."""
 
@@ -366,18 +368,22 @@ Synthesize all findings into a final, comprehensive answer to the original task.
                 ])
                 prompt = f"""You are a worker following the manager's instructions.
 
+Original task: {input_message}
+
 Your previous outputs:
 {previous_context}
 
-New task from manager: {subtask}
+Subtask from manager: {subtask}
 
-Execute this task and provide your response."""
+Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
             else:
                 prompt = f"""You are a worker following the manager's instructions.
 
-Task from manager: {subtask}
+Original task: {input_message}
 
-Execute this task and provide your response."""
+Subtask from manager: {subtask}
+
+Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
 
             response = await self.call_agent(
                 agent,
@@ -404,7 +410,8 @@ Execute this task and provide your response."""
         instruction: str,
         agent_tasks: Dict[str, str],
         agent_outputs: Dict[str, List[str]],
-        current_round: int
+        current_round: int,
+        input_message: str,
     ) -> Dict[str, str]:
         """Execute peer discussion between two agents in parallel."""
 
@@ -419,15 +426,17 @@ Execute this task and provide your response."""
 
             prompt = f"""You are a worker participating in a peer discussion with {peer.name}.
 
-Your Task: {agent_task}
+Original task: {input_message}
+
+Your Subtask: {agent_task}
 Your Output: {agent_output}
 
-{peer.name}'s Task: {peer_task}
+{peer.name}'s Subtask: {peer_task}
 {peer.name}'s Output: {peer_output}
 
 Manager's Instruction for this discussion: {instruction}
 
-Discuss with your peer and provide your insights based on the manager's instruction."""
+Discuss with your peer and provide your insights based on the manager's instruction. Keep the original task's overall goal in mind."""
 
             response = await self.call_agent(
                 agent,

@@ -14,7 +14,8 @@ export interface Node {
 }
 
 // Topology Types
-export type TopologyType = 'centralized' | 'sequential' | 'hierarchical' | 'p2p' | 'mesh' | 'cyclic';
+// 'p2p' deprecated for the 5-topology study; 'sequential' renamed to 'chain', 'cyclic' renamed to 'cycle'
+export type TopologyType = 'centralized' | 'chain' | 'hierarchical' | 'mesh' | 'cycle';
 
 export type EdgeType = 'bidirectional' | 'unidirectional';
 

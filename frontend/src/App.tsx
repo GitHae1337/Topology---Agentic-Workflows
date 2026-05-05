@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Canvas } from './components/Canvas';
 import { Sidebar } from './components/Sidebar';
 import { ConfigPanel } from './components/ConfigPanel';
@@ -6,10 +6,14 @@ import { ChatPanel } from './components/ChatPanel';
 import { ChatInput } from './components/ChatInput';
 import { RolePopup } from './components/common/RolePopup';
 import { DragPreview } from './components/common/DragPreview';
-import { useCanvasStore } from './store';
+import { useCanvasStore, useSessionStore } from './store';
 import { IfElseCondition } from './types';
 import { getTopologyDefinition } from './constants/topologies';
 import { logsApi } from './api/workflow';
+import { useUndoRedoKeys } from './hooks/useUndoRedoKeys';
+import { ResearcherLanding } from './components/ResearcherLanding/ResearcherLanding';
+import { TaskPanel } from './components/TaskPanel/TaskPanel';
+import { EvaluationPanel } from './components/EvaluationPanel/EvaluationPanel';
 
 // Hook to get edge error from store
 const useEdgeError = () => {
@@ -18,15 +22,18 @@ const useEdgeError = () => {
   return { edgeError, setEdgeError };
 };
 
-type AppMode = 'canvas' | 'chat';
+type AppMode = 'landing' | 'canvas' | 'chat';
 
 interface ValidationError {
   message: string;
   details: string;
 }
 
+type OpenOverlay = 'task' | 'eval' | null;
+
 function App() {
-  const [mode, setMode] = useState<AppMode>('canvas');
+  const [mode, setMode] = useState<AppMode>('landing');
+  const [openOverlay, setOpenOverlay] = useState<OpenOverlay>(null);
   const [validationError, setValidationError] = useState<ValidationError | null>(null);
   const nodes = useCanvasStore(state => state.nodes);
   const connections = useCanvasStore(state => state.connections);
@@ -36,6 +43,21 @@ function App() {
   const clearCurrentChat = useCanvasStore(state => state.clearCurrentChat);
   const workflowName = useCanvasStore(state => state.workflowName);
   const { edgeError, setEdgeError } = useEdgeError();
+
+  // Reactive subscriptions so the Undo/Redo buttons re-render on stack changes.
+  const canUndo = useCanvasStore(state => state.undoStack.length > 0);
+  const canRedo = useCanvasStore(state => state.redoStack.length > 0);
+  const undo = useCanvasStore(state => state.undo);
+  const redo = useCanvasStore(state => state.redo);
+
+  // Wire Cmd/Ctrl + Z / Shift+Z keyboard shortcuts.
+  useUndoRedoKeys();
+
+  // Fire participant session start exactly once per app mount. sessionStore
+  // internally guards against duplicate calls if React StrictMode double-mounts.
+  useEffect(() => {
+    useSessionStore.getState().initSession();
+  }, []);
 
   // Save logs and clear canvas
   const handleClearCanvas = useCallback(async () => {
@@ -167,7 +189,7 @@ function App() {
       }
     }
 
-    // Check for topologies that require a start agent (P2P, Mesh, Cyclic)
+    // Check for topologies that require a start agent (Mesh, Cycle)
     for (const template of topologyTemplates) {
       const topoDef = getTopologyDefinition(template.type);
       if (topoDef?.needsStartAgent && !template.startAgentId) {
@@ -191,6 +213,11 @@ function App() {
     }
   };
 
+  // Landing screen (researcher form). Once they hit Start, switch to canvas.
+  if (mode === 'landing') {
+    return <ResearcherLanding onStart={() => setMode('canvas')} />;
+  }
+
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-white">
       {/* Left Sidebar - hidden in chat mode */}
@@ -198,10 +225,45 @@ function App() {
 
       {/* Main Canvas Area */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Top Bar */}
-        <div className="flex justify-between items-center px-5 py-3 bg-[#171717] border-b border-[#262626] flex-shrink-0">
-          {/* Left spacer */}
-          <div className="w-16"></div>
+        {/* Top Bar — relative+z so Task/Eval popovers stack above Canvas nodes */}
+        <div className="flex justify-between items-center px-5 py-3 bg-[#171717] border-b border-[#262626] flex-shrink-0 relative z-[1100]">
+          {/* Undo / Redo group - canvas mode only. Chat mode keeps a spacer to preserve layout balance. */}
+          {mode === 'canvas' ? (
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => undo()}
+                disabled={!canUndo}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border border-[#404040] transition-colors ${
+                  canUndo
+                    ? 'bg-[#262626] hover:bg-[#333] text-[#a3a3a3] hover:text-white cursor-pointer'
+                    : 'bg-[#1a1a1a] text-[#555] cursor-not-allowed'
+                }`}
+                title="Undo (⌘Z)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 7v6h6" />
+                  <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+                </svg>
+              </button>
+              <button
+                onClick={() => redo()}
+                disabled={!canRedo}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center border border-[#404040] transition-colors ${
+                  canRedo
+                    ? 'bg-[#262626] hover:bg-[#333] text-[#a3a3a3] hover:text-white cursor-pointer'
+                    : 'bg-[#1a1a1a] text-[#555] cursor-not-allowed'
+                }`}
+                title="Redo (⌘⇧Z)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 7v6h-6" />
+                  <path d="M3 17a9 9 0 0 1 15-6.7L21 13" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="w-16"></div>
+          )}
 
           {/* Mode Toggle - center */}
           <div className="flex bg-[#262626] rounded-full p-1">
@@ -230,18 +292,35 @@ function App() {
             </button>
           </div>
 
-          {/* Clear button - right (only in canvas mode) */}
-          {mode === 'canvas' ? (
+          {/* Right group: Task / Eval / Clear / Back in both canvas and chat modes */}
+          <div className="flex items-center gap-2">
+            <TaskPanel
+              isOpen={openOverlay === 'task'}
+              onToggle={() => setOpenOverlay((cur) => (cur === 'task' ? null : 'task'))}
+            />
+            {/* Evaluation only makes sense in chat mode (after a workflow run);
+                hide in canvas mode to keep the toolbar focused on building. */}
+            {mode === 'chat' && (
+              <EvaluationPanel
+                isOpen={openOverlay === 'eval'}
+                onToggle={() => setOpenOverlay((cur) => (cur === 'eval' ? null : 'eval'))}
+              />
+            )}
             <button
               onClick={handleClearCanvas}
               className="px-3 py-1.5 bg-[#262626] hover:bg-[#333] border border-[#404040] rounded-lg text-[#a3a3a3] hover:text-white text-sm cursor-pointer transition-colors"
-              title="Clear canvas"
+              title="캔버스 / 채팅 초기화"
             >
               Clear
             </button>
-          ) : (
-            <div className="w-16"></div>
-          )}
+            <button
+              onClick={() => setMode('landing')}
+              className="px-3 py-1.5 bg-[#262626] hover:bg-[#333] border border-[#404040] rounded-lg text-[#a3a3a3] hover:text-white text-sm cursor-pointer transition-colors"
+              title="처음 화면(연구자 입력)으로 돌아가기"
+            >
+              ← 처음으로
+            </button>
+          </div>
         </div>
 
         {/* Validation Error Banner */}
@@ -265,7 +344,7 @@ function App() {
           </div>
         )}
 
-        {/* Edge Error Banner (for loop prevention in sequential topology) */}
+        {/* Edge Error Banner (for loop prevention in chain topology) */}
         {edgeError && (
           <div className="bg-[#3d1f1f] border-b border-[#5c2b2b] px-5 py-3 flex items-start gap-3 flex-shrink-0">
             <svg className="w-5 h-5 text-[#f87171] flex-shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

@@ -28,8 +28,8 @@ const getConnectionPoint = (
   const baseX = agent.x - templateX + NODE_CENTER_X;
   const baseY = agent.y - templateY;
 
-  // Unidirectional topologies (Sequential) - standard output→input
-  if (templateType === 'sequential') {
+  // Unidirectional topologies (Chain) - standard output→input
+  if (templateType === 'chain') {
     // Determine direction based on relative Y position
     if (agent.y < otherAgent.y) {
       // This agent is above, use output (bottom)
@@ -64,8 +64,8 @@ const getConnectionPoint = (
     }
   }
 
-  // P2P, Mesh, Cyclic - use input dot (top)
-  if (templateType === 'p2p' || templateType === 'mesh' || templateType === 'cyclic') {
+  // Mesh, Cycle - use input dot (top)
+  if (templateType === 'mesh' || templateType === 'cycle') {
     return { x: baseX, y: baseY + INPUT_DOT_Y, direction: 'up' };
   }
 

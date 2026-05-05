@@ -24,6 +24,7 @@ export const ConnectionsLayer = ({ mousePos }: ConnectionsLayerProps) => {
   const topologyTemplates = useCanvasStore(state => state.topologyTemplates);
   const connecting = useCanvasStore(state => state.connecting);
   const connectingFromPort = useCanvasStore(state => state.connectingFromPort);
+  const connectingFromInput = useCanvasStore(state => state.connectingFromInput);
   const deleteConnection = useCanvasStore(state => state.deleteConnection);
 
   return (
@@ -174,7 +175,10 @@ export const ConnectionsLayer = ({ mousePos }: ConnectionsLayerProps) => {
         let x1: number, y1: number;
         let isHorizontalStart = false;
 
-        // Calculate source position based on source type
+        // Calculate source position based on source type. When the user
+        // started by clicking an INPUT dot (connectingFromInput=true), the
+        // preview line should originate from the input (left) dot, not the
+        // output (right) dot.
         if (sourceNode?.type === 'ifelse' && connectingFromPort !== null) {
           const conditions = (sourceNode.config?.conditions as IfElseCondition[]) || [];
           const pos = getIfElseOutputPosition(sourceNode.x, sourceNode.y, connectingFromPort, conditions.length);
@@ -187,16 +191,20 @@ export const ConnectionsLayer = ({ mousePos }: ConnectionsLayerProps) => {
           y1 = pos.y;
           isHorizontalStart = true;
         } else if (sourceNode) {
-          const pos = getNodeOutputPosition(sourceNode.x, sourceNode.y, sourceNode.type, !!sourceNode.topologyId);
+          const pos = connectingFromInput
+            ? getNodeInputPosition(sourceNode.x, sourceNode.y, sourceNode.type, !!sourceNode.topologyId)
+            : getNodeOutputPosition(sourceNode.x, sourceNode.y, sourceNode.type, !!sourceNode.topologyId);
           x1 = pos.x;
           y1 = pos.y;
-          isHorizontalStart = getOutputDirection(sourceNode.type) === 'horizontal';
+          isHorizontalStart = (connectingFromInput ? getInputDirection(sourceNode.type) : getOutputDirection(sourceNode.type)) === 'horizontal';
         } else if (sourceTemplate) {
-          const pos = getTopologyOutputPosition(sourceTemplate.x, sourceTemplate.y, sourceTemplate.width, sourceTemplate.height);
+          const pos = connectingFromInput
+            ? getTopologyInputPosition(sourceTemplate.x, sourceTemplate.y, sourceTemplate.width, sourceTemplate.height)
+            : getTopologyOutputPosition(sourceTemplate.x, sourceTemplate.y, sourceTemplate.width, sourceTemplate.height);
           x1 = pos.x;
           y1 = pos.y;
-          // Topology output is vertical (bottom), not horizontal
-          isHorizontalStart = false;
+          // Topology output is vertical (bottom); input is horizontal (left).
+          isHorizontalStart = connectingFromInput;
         } else {
           return null;
         }

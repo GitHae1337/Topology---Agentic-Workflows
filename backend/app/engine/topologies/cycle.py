@@ -8,9 +8,9 @@ from ...llm.base import LLMMessage
 logger = logging.getLogger(__name__)
 
 
-class CyclicExecutor(BaseTopologyExecutor):
+class CycleExecutor(BaseTopologyExecutor):
     """
-    Cyclic (Loop) topology executor.
+    Cycle (Loop) topology executor.
 
     Behavior:
     1. Start agent receives input
@@ -27,14 +27,14 @@ class CyclicExecutor(BaseTopologyExecutor):
         input_message: str,
         conversation_history: List[Dict[str, str]] = None,
     ) -> AsyncGenerator[ExecutionMessage, None]:
-        logger.info(f"Starting cyclic execution with {len(agents)} agents")
+        logger.info(f"Starting cycle execution with {len(agents)} agents")
         logger.info(f"Conversation history: {len(conversation_history) if conversation_history else 0} messages")
 
         # Build history context for prompts
         history_context = self.build_history_context(conversation_history) if conversation_history else ""
 
         if not topology.start_agent_id:
-            logger.error("No start agent specified for cyclic topology")
+            logger.error("No start agent specified for cycle topology")
             yield self.create_message("system", "user", "Error: Start agent not specified")
             return
 
@@ -47,7 +47,7 @@ class CyclicExecutor(BaseTopologyExecutor):
         # Build adjacency list
         adj = self.get_adjacency_list(topology)
 
-        logger.info(f"=== CYCLIC DEBUG ===")
+        logger.info(f"=== CYCLE DEBUG ===")
         logger.info(f"Topology agents: {topology.agents}")
         logger.info(f"Internal edges count: {len(topology.internal_edges)}")
         for edge in topology.internal_edges:
@@ -127,4 +127,4 @@ Provide your refined output. If you believe the task is complete, include "TASK 
                 # No next agent, end the loop
                 break
 
-        logger.info(f"Cyclic execution completed in {turns} turns, {iterations} iterations")
+        logger.info(f"Cycle execution completed in {turns} turns, {iterations} iterations")

@@ -1,3 +1,8 @@
+/*
+ * LEGACY PROTOTYPE — deprecated for the 5-topology study (Centralized, Chain, Hierarchical, Mesh, Cycle).
+ * This standalone JSX is not imported by the active frontend (frontend/src/*) and is preserved
+ * for historical reference only. The default export is commented out at the bottom of the file.
+ */
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 
 const MASAgentBuilder = () => {
@@ -1649,4 +1654,4 @@ const MASAgentBuilder = () => {
   );
 };
 
-export default MASAgentBuilder;
+// export default MASAgentBuilder;  // deprecated — file kept for reference only, not part of the active 5-topology study

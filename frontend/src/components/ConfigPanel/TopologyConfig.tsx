@@ -117,11 +117,11 @@ export const TopologyConfig = ({ template }: TopologyConfigProps) => {
           )}
         </div>
 
-        {/* Max Turns/Rounds - not applicable for Sequential (DAG/FSM ends when last node completes) */}
-        {template.type !== 'sequential' && (
+        {/* Max Turns/Rounds - not applicable for Chain (ends when last node completes) */}
+        {template.type !== 'chain' && (
           <div className="mb-4">
             <label className="block text-xs text-[#a3a3a3] mb-1.5">
-              {template.type === 'mesh' || template.type === 'centralized' || template.type === 'hierarchical' || template.type === 'p2p' ? 'Max Rounds' : 'Max Turns'}
+              {template.type === 'mesh' || template.type === 'centralized' || template.type === 'hierarchical' ? 'Max Rounds' : 'Max Turns'}
             </label>
             <input
               type="number"
@@ -134,8 +134,8 @@ export const TopologyConfig = ({ template }: TopologyConfigProps) => {
           </div>
         )}
 
-        {/* Timeout - not applicable for Sequential */}
-        {template.type !== 'sequential' && (
+        {/* Timeout - not applicable for Chain */}
+        {template.type !== 'chain' && (
           <div className="mb-4">
             <label className="block text-xs text-[#a3a3a3] mb-1.5">Timeout (seconds)</label>
             <input
@@ -148,8 +148,8 @@ export const TopologyConfig = ({ template }: TopologyConfigProps) => {
           </div>
         )}
 
-        {/* Early Termination - not applicable for Sequential */}
-        {template.type !== 'sequential' && (
+        {/* Early Termination - not applicable for Chain */}
+        {template.type !== 'chain' && (
           <div className="mb-4">
             <label className="flex items-center gap-2 cursor-pointer">
               <input

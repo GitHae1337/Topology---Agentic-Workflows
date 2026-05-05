@@ -20,6 +20,9 @@ build/
 *.db
 workflows.db
 
+# Third-party vendored repos (cloned/downloaded, not committed)
+backend/third_party/
+
 # Logs (실행 시 자동 생성)
 Log/
 logs/

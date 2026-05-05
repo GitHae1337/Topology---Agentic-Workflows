@@ -18,6 +18,12 @@ export const ConfigPanel = () => {
     : null;
   const selectedTemplateData = selectedTemplate ? topologyTemplates.find(t => t.id === selectedTemplate) : null;
 
+  // Hide ConfigPanel entirely for Start/End nodes — they have no useful
+  // config and the description tooltip clutters the canvas.
+  if (selectedNodeData && (selectedNodeData.type === 'start' || selectedNodeData.type === 'end')) {
+    return null;
+  }
+
   // Only show panel when something is selected
   if (!selectedNodeData && !selectedTemplateData) {
     // Show info when multiple nodes selected

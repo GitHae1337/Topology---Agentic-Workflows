@@ -4,7 +4,8 @@ from sse_starlette.sse import EventSourceResponse
 import json
 import logging
 import asyncio
-from typing import Dict, Any
+from pathlib import Path
+from typing import Dict, Any, Optional
 
 from ..models import ExecutionRequest, ExecutionResult, ResumeRequest
 from ..engine.graph_orchestrator import GraphOrchestrator, ExecutionContext
@@ -15,6 +16,85 @@ logger = logging.getLogger(__name__)
 
 # In-memory store for paused executions (production should use Redis)
 _paused_executions: Dict[str, Dict[str, Any]] = {}
+
+
+# ---- Korean task reference injection ----
+
+_TRANSLATIONS_PATH = Path(__file__).resolve().parents[2] / "data" / "translations_ko.json"
+_translations_cache: Optional[dict] = None
+
+
+def _load_ko_translations() -> dict:
+    global _translations_cache
+    if _translations_cache is None:
+        if not _TRANSLATIONS_PATH.exists():
+            print(f"[execute] translations_ko.json missing at {_TRANSLATIONS_PATH}")
+            _translations_cache = {}
+        else:
+            with _TRANSLATIONS_PATH.open("r", encoding="utf-8") as f:
+                _translations_cache = json.load(f)
+            print(f"[execute] loaded {len(_translations_cache)} Korean translations")
+    return _translations_cache
+
+
+def _format_records(records: list[dict], fields: list[str]) -> str:
+    """Render list of dict as compact bullet lines."""
+    out = []
+    for r in records:
+        parts = [f"{k}={r.get(k, '')}" for k in fields if k in r]
+        out.append("- " + ", ".join(parts))
+    return "\n".join(out) if out else "- (없음)"
+
+
+def _build_reference_prompt(task_id: str) -> Optional[str]:
+    """If task_id has Korean translation, build a reference prompt the LLM
+    can use to ground its plan in Korean names. Returns None for English-only
+    tasks so they go through unmodified.
+    """
+    translations = _load_ko_translations()
+    ko = translations.get(task_id)
+    if ko is None:
+        return None
+    ref = ko.get("reference_information")
+    if not isinstance(ref, dict):
+        return None
+
+    sections = []
+    sections.append(
+        "## 교통편\n"
+        + _format_records(
+            ref.get("transportation", []),
+            ["type", "carrier", "number", "from", "to", "departure_time", "arrival_time", "price_per_person"],
+        )
+    )
+    sections.append(
+        "## 숙소\n"
+        + _format_records(
+            ref.get("accommodations", []),
+            ["name", "city", "price_per_night", "room_type", "house_rules", "max_occupancy"],
+        )
+    )
+    sections.append(
+        "## 식당\n"
+        + _format_records(
+            ref.get("restaurants", []),
+            ["name", "city", "cuisine", "price_per_person"],
+        )
+    )
+    sections.append(
+        "## 관광지\n"
+        + _format_records(
+            ref.get("attractions", []),
+            ["name", "city", "address", "category"],
+        )
+    )
+
+    body = "\n\n".join(sections)
+    return (
+        "[참고 자료 — 일정 작성에 사용할 수 있는 후보 목록. 이름은 그대로 사용할 것]\n\n"
+        + body
+        + "\n\n[사용자 요청]\n"
+    )
 
 
 @router.post("/{workflow_id}")
@@ -32,12 +112,22 @@ async def execute_workflow(workflow_id: str, request: ExecutionRequest):
     # Create graph orchestrator
     orchestrator = GraphOrchestrator(workflow)
 
+    # If a Korean task is active, prepend its reference data to the input
+    # so the LLM grounds its plan in Korean names from translations_ko.json.
+    augmented_input = request.input
+    if request.task_id:
+        ref_prompt = _build_reference_prompt(request.task_id)
+        if ref_prompt:
+            augmented_input = ref_prompt + request.input
+            print(f"[execute] injected Korean reference for task {request.task_id} "
+                  f"({len(ref_prompt)} chars)")
+
     async def event_generator():
         """Generate SSE events from workflow execution."""
         messages = []
 
         async for message in orchestrator.execute(
-            request.input,
+            augmented_input,
             request.config_overrides,
             history=request.history,
         ):
@@ -223,10 +313,18 @@ async def execute_workflow_sync(workflow_id: str, request: ExecutionRequest):
     # Create orchestrator
     orchestrator = GraphOrchestrator(workflow)
 
+    # Same Korean reference injection as the streaming endpoint above.
+    augmented_input = request.input
+    if request.task_id:
+        ref_prompt = _build_reference_prompt(request.task_id)
+        if ref_prompt:
+            augmented_input = ref_prompt + request.input
+            print(f"[execute.sync] injected Korean reference for task {request.task_id}")
+
     # Collect all messages
     messages = []
     async for message in orchestrator.execute(
-        request.input,
+        augmented_input,
         request.config_overrides,
         history=request.history,
     ):

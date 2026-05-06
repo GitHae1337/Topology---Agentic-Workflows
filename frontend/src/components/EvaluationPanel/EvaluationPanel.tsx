@@ -4,17 +4,23 @@ import {
   benchmarksApi,
   ConstraintResult,
   ConstraintStatus,
-  EvaluationResult,
 } from '../../api/benchmarks';
+import { logsApi } from '../../api/logs';
+import guideConfig from './guideConfig.json';
 
-// Floating panel that auto-grades the latest agent reply against the
-// 13 TravelPlanner constraints (8 commonsense + 5 hard) for the active
-// task. Reference-only — the participant decides when to stop.
+// Stage 1 — Self-Assessment Guide.
 //
-// Trigger: every time `currentChat.messages` gains a new assistant message
-// (and a task is set), we POST that message's content to the evaluator.
+// The participant sees a non-scoring guide (5 dimensions + 기타). Automatic
+// evaluation still runs in the background per assistant message but is
+// hidden from the UI; both the eval result and every dimension expand/
+// collapse action are POSTed to /api/logs/evaluation as a hidden trial log
+// for post-hoc research analysis.
+//
+// Helpers below (CONSTRAINT_LABELS, translateReason, ConstraintRow,
+// COMMONSENSE_KEYS, HARD_KEYS, etc.) are intentionally kept-but-unused so
+// Stage 2 can revive them if a different UI is needed. Do not delete.
 
-const COMMONSENSE_KEYS = [
+export const COMMONSENSE_KEYS = [
   'is_reasonable_visiting_city',
   'is_valid_restaurants',
   'is_valid_attractions',
@@ -25,7 +31,7 @@ const COMMONSENSE_KEYS = [
   'is_not_absent',
 ] as const;
 
-const HARD_KEYS = [
+export const HARD_KEYS = [
   'valid_cost',
   'valid_room_rule',
   'valid_cuisine',
@@ -107,7 +113,7 @@ const STATUS_COLOR: Record<ConstraintStatus, string> = {
   skipped: 'text-[#666]',
 };
 
-function ConstraintRow({
+export function ConstraintRow({
   name,
   result,
 }: {
@@ -140,12 +146,15 @@ interface EvaluationPanelProps {
 
 export const EvaluationPanel = ({ isOpen, onToggle }: EvaluationPanelProps) => {
   const taskId = useSessionStore((s) => s.taskId);
+  const participantId = useSessionStore((s) => s.participantId);
+  const sessionId = useSessionStore((s) => s.sessionId);
   const messages = useCanvasStore((s) => s.currentChat.messages);
 
-  const [result, setResult] = useState<EvaluationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // iterationIndex starts at 0 and increments to 1 on the first auto-eval
+  // of the trial, 2 on the second, etc. Resets when taskId changes.
+  const [iterationIndex, setIterationIndex] = useState(0);
   const [evaluatedMessageId, setEvaluatedMessageId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   // Find the latest assistant message in the current chat.
   const latestAssistant = (() => {
@@ -155,199 +164,137 @@ export const EvaluationPanel = ({ isOpen, onToggle }: EvaluationPanelProps) => {
     }
     return null;
   })();
-
   const triggerKey = latestAssistant ? latestAssistant.id : null;
 
-  // Reset evaluation state whenever the active task changes (new trial).
-  // Without this, switching trials shows the previous trial's pass/fail
-  // until a new evaluation completes.
+  // Reset on new trial (taskId change).
   useEffect(() => {
-    setResult(null);
-    setError(null);
+    setIterationIndex(0);
     setEvaluatedMessageId(null);
-    setLoading(false);
+    setExpanded(new Set());
   }, [taskId]);
 
+  // Stream A — hidden automatic evaluation. Fetch but never render.
+  // The result is POSTed to /api/logs/evaluation tagged with the current
+  // iterationIndex so the researcher can correlate auto-eval with
+  // self-judgment post-hoc.
   useEffect(() => {
-    if (!taskId || !latestAssistant) {
-      return;
-    }
-    if (evaluatedMessageId === triggerKey) {
-      return; // already evaluated this message
-    }
+    if (!taskId || !latestAssistant) return;
+    if (evaluatedMessageId === triggerKey) return;
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    const nextIter = iterationIndex + 1;
 
     console.log(
-      '[EvaluationPanel] auto-evaluate task=',
-      taskId,
-      'msg=',
-      latestAssistant.id,
+      '[EvaluationPanel] Stream A auto-eval task=', taskId,
+      'msg=', latestAssistant.id, 'iter=', nextIter,
     );
     benchmarksApi
       .evaluateTravelPlanner(taskId, latestAssistant.content)
       .then((r) => {
         if (cancelled) return;
-        setResult(r);
         setEvaluatedMessageId(latestAssistant.id);
-        setLoading(false);
+        setIterationIndex(nextIter);
+        if (sessionId && participantId) {
+          logsApi.logEvaluation({
+            sessionId,
+            participantId,
+            taskId,
+            iterationIndex: nextIter,
+            automaticEvaluation: r,
+          });
+        }
       })
       .catch((e: Error) => {
         if (cancelled) return;
-        console.error('[EvaluationPanel] evaluate failed:', e);
-        setError(e.message);
-        setLoading(false);
+        console.error('[EvaluationPanel] auto-eval failed:', e);
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [taskId, triggerKey, latestAssistant, evaluatedMessageId]);
+    return () => { cancelled = true; };
+  }, [taskId, triggerKey, latestAssistant, evaluatedMessageId, iterationIndex, sessionId, participantId]);
 
-  const handleManualReeval = () => {
-    if (!taskId || !latestAssistant) return;
-    setEvaluatedMessageId(null); // force re-trigger via useEffect
+  // Stream B — guide expand/collapse interaction log.
+  const toggleDimension = (dimensionId: string) => {
+    const next = new Set(expanded);
+    let actionType: 'expand' | 'collapse';
+    if (next.has(dimensionId)) {
+      next.delete(dimensionId);
+      actionType = 'collapse';
+    } else {
+      next.add(dimensionId);
+      actionType = 'expand';
+    }
+    setExpanded(next);
+
+    if (sessionId && participantId && taskId) {
+      logsApi.logEvaluation({
+        sessionId,
+        participantId,
+        taskId,
+        iterationIndex,
+        guideAction: { type: actionType, dimensionId },
+      });
+    }
   };
-
-  const summaryLine = (() => {
-    if (!result) return null;
-    return `전달=${result.delivered ? 'yes' : 'no'} · 통과 ${result.passed_count}/${result.evaluated_count} · 전체통과=${result.all_passed ? 'yes' : 'no'}`;
-  })();
-
-  const buttonLabel = (() => {
-    if (!taskId) return '평가';
-    if (loading) return '평가 중...';
-    if (!result) return '평가 (대기)';
-    return `평가 ${result.passed_count}/${result.evaluated_count}${result.all_passed ? ' ✓' : ''}`;
-  })();
 
   return (
     <div className="relative">
       <button
         onClick={onToggle}
         className="px-3 py-1.5 bg-[#262626] hover:bg-[#333] border border-[#404040] rounded-lg text-[#a3a3a3] hover:text-white text-sm cursor-pointer transition-colors"
-        title="최신 응답에 대한 제약 사항 평가"
+        title="자기 점검 가이드"
       >
-        {buttonLabel}
+        평가
       </button>
 
       {isOpen && (
         <div className="absolute top-full right-0 mt-2 bg-[#1f1f1f] border border-[#404040] rounded-lg shadow-xl p-3 w-[420px] max-h-[80vh] overflow-y-auto text-sm z-50">
           <div className="flex justify-between items-center mb-2">
-            <span className="font-semibold text-white">제약 사항 평가</span>
-            <div className="flex gap-1.5 items-center">
-              <button
-                onClick={handleManualReeval}
-                disabled={!taskId || !latestAssistant}
-                className="text-[#888] hover:text-white text-xs disabled:opacity-30 disabled:cursor-not-allowed"
-                title="최신 응답으로 다시 평가"
-              >
-                재평가
-              </button>
-              <button
-                onClick={onToggle}
-                className="text-[#888] hover:text-white"
-                title="닫기"
-              >
-                X
-              </button>
-            </div>
+            <span className="font-semibold text-white">자기 점검 가이드</span>
+            <button
+              onClick={onToggle}
+              className="text-[#888] hover:text-white"
+              title="닫기"
+            >
+              X
+            </button>
           </div>
 
-          {!taskId && (
-            <div className="text-[#888] text-xs">
-              활성 과제가 없습니다. 처음 화면에서 task_id를 입력하세요.
-            </div>
-          )}
+          <div className="text-[11px] text-[#a3a3a3] mb-3 leading-snug">
+            {guideConfig.header}
+          </div>
 
-          {taskId && !latestAssistant && (
-            <div className="text-[#888] text-xs">
-              먼저 워크플로우를 실행하세요. 마지막 응답을 평가합니다.
-            </div>
-          )}
-
-          {loading && <div className="text-[#888] text-xs">평가 중...</div>}
-
-          {error && (
-            <div className="text-[#dc2626] text-xs break-all">
-              평가 실패: {error}
-            </div>
-          )}
-
-          {result && (
-            <div className="space-y-2">
-              <div className="text-[10px] text-[#a3a3a3] font-mono break-all">
-                {summaryLine}
-              </div>
-
-              {/* 두 단계 구조:
-                  1단계 — 기본 검증 (commonsense 8개) — 항상 표시.
-                  2단계 — 추가 제약 (hard 5개) — 1단계 핵심 통과(gate) 시에만
-                          개별 평가. 미통과 시 5개 row 대신 한 줄 안내. */}
-              {(() => {
-                const csCount = COMMONSENSE_KEYS.reduce(
-                  (acc, k) => acc + (result.constraints.commonsense[k]?.status === 'pass' ? 1 : 0),
-                  0,
-                );
-
-                const GATE_FAIL_REASONS = new Set([
-                  '공통상식 검증 실패로 하드 제약 미평가',
-                  '계획 미생성',
-                ]);
-                const hardEntries = HARD_KEYS.map((k) => result.constraints.hard[k]);
-                const isHardGateFail = hardEntries.every(
-                  (e) => e?.status === 'skipped' && GATE_FAIL_REASONS.has(e?.reason ?? ''),
-                );
-                const hardEvaluated = hardEntries.filter((e) => e?.status !== 'skipped').length;
-                const hardPassed = hardEntries.filter((e) => e?.status === 'pass').length;
-
-                return (
-                  <div className="bg-[#0a0a0a] border border-[#333] rounded p-2 space-y-3">
-                    {/* 1단계 */}
-                    <div>
-                      <div className="text-[11px] font-semibold text-[#a3a3a3] mb-1.5">
-                        1단계: 기본 검증 ({csCount}/8)
-                      </div>
-                      <div className="space-y-0.5">
-                        {COMMONSENSE_KEYS.map((k) => (
-                          <ConstraintRow
-                            key={k}
-                            name={k}
-                            result={result.constraints.commonsense[k]}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 2단계 */}
-                    <div>
-                      <div className="text-[11px] font-semibold text-[#a3a3a3] mb-1.5">
-                        2단계: 추가 제약
-                        {!isHardGateFail && ` (${hardPassed}/${hardEvaluated})`}
-                      </div>
-                      {isHardGateFail ? (
-                        <div className="text-[11px] text-[#888] bg-[#171717] border border-[#262626] rounded px-2 py-1.5 leading-snug">
-                          기본 검증 통과 시에만 추가 제약(예산 / 숙소 규약 / 음식 / 객실 / 교통수단)을 평가합니다 — 현재는 기본 검증 미통과로 생략됨.
-                        </div>
-                      ) : (
-                        <div className="space-y-0.5">
-                          {HARD_KEYS.map((k) => (
-                            <ConstraintRow
-                              key={k}
-                              name={k}
-                              result={result.constraints.hard[k]}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
+          <div className="space-y-1">
+            {guideConfig.dimensions.map((dim) => {
+              const isExpanded = expanded.has(dim.id);
+              return (
+                <div key={dim.id} className="bg-[#0a0a0a] border border-[#333] rounded">
+                  <button
+                    onClick={() => toggleDimension(dim.id)}
+                    className="w-full flex items-center justify-between px-2.5 py-2 text-left hover:bg-[#171717] transition-colors"
+                  >
+                    <span className="text-white text-xs font-medium">
+                      {dim.label}
+                    </span>
+                    <span className="text-[#666] text-xs">
+                      {isExpanded ? '▾' : '▸'}
+                    </span>
+                  </button>
+                  {isExpanded && (
+                    <ul className="px-4 py-2 space-y-1.5 border-t border-[#262626] list-disc list-outside marker:text-[#666]">
+                      {dim.subQuestions.map((q) => (
+                        <li
+                          key={q.id}
+                          className="text-[11px] text-[#d4d4d4] leading-snug pl-1"
+                        >
+                          {q.text}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -76,6 +76,37 @@ export const ChatPanel = () => {
     }
   }, [chatWidth, isResizing]);
 
+  // Input-area vertical resize. Drag the top edge of the input area to
+  // grow/shrink it; bounds: min 90px, max 30% of window height.
+  const [inputAreaHeight, setInputAreaHeight] = useState<number>(() => {
+    const saved = localStorage.getItem('mas_input_height');
+    return saved ? parseInt(saved, 10) || 110 : 110;
+  });
+  const [isResizingInput, setIsResizingInput] = useState(false);
+
+  useEffect(() => {
+    if (!isResizingInput) return;
+    const onMove = (e: MouseEvent) => {
+      const proposed = window.innerHeight - e.clientY;
+      const max = Math.floor(window.innerHeight * 0.3);
+      const min = 90;
+      setInputAreaHeight(Math.max(min, Math.min(max, proposed)));
+    };
+    const onUp = () => setIsResizingInput(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isResizingInput]);
+
+  useEffect(() => {
+    if (!isResizingInput) {
+      localStorage.setItem('mas_input_height', String(inputAreaHeight));
+    }
+  }, [inputAreaHeight, isResizingInput]);
+
   // Get current chat state from store (persists across mode switches)
   const currentChat = useCanvasStore(state => state.currentChat);
   const setCurrentChat = useCanvasStore(state => state.setCurrentChat);
@@ -910,36 +941,55 @@ export const ChatPanel = () => {
         )}
       </div>
 
-      {/* Input Area */}
-      <div className="p-4 border-t border-[#262626]">
-        <div className="bg-[#262626] rounded-xl px-4 py-3">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Send a message..."
-            className="w-full bg-transparent text-sm text-white placeholder-[#666] resize-none outline-none"
-            rows={1}
+      {/* Input Area — vertically resizable via top-edge drag handle. */}
+      <div
+        className="border-t border-[#262626] flex flex-col relative shrink-0"
+        style={{ height: `${inputAreaHeight}px` }}
+      >
+        {/* Drag handle on the top edge */}
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizingInput(true);
+          }}
+          className="absolute -top-1 left-0 right-0 h-2 cursor-row-resize z-30 group"
+          title="드래그해서 입력창 높이 조절"
+        >
+          <div
+            className={`absolute top-1 left-0 right-0 h-px transition-colors ${
+              isResizingInput ? 'bg-[#3b82f6]' : 'bg-transparent group-hover:bg-[#3b82f6]'
+            }`}
           />
-          <div className="flex items-center justify-between mt-2">
-            <button className="text-[#666] hover:text-white">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-              </svg>
-            </button>
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || isExecuting || !!approvalPending}
-              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-                input.trim() && !isExecuting && !approvalPending
-                  ? 'bg-white text-black hover:bg-gray-200'
-                  : 'bg-[#404040] text-[#666] cursor-not-allowed'
-              }`}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/>
-              </svg>
-            </button>
+        </div>
+        <div className="flex-1 p-4 overflow-hidden">
+          <div className="bg-[#262626] rounded-xl px-4 py-3 h-full flex flex-col">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Send a message..."
+              className="w-full flex-1 bg-transparent text-sm text-white placeholder-[#666] resize-none outline-none"
+            />
+            <div className="flex items-center justify-between mt-2 shrink-0">
+              <button className="text-[#666] hover:text-white">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                </svg>
+              </button>
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || isExecuting || !!approvalPending}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  input.trim() && !isExecuting && !approvalPending
+                    ? 'bg-white text-black hover:bg-gray-200'
+                    : 'bg-[#404040] text-[#666] cursor-not-allowed'
+                }`}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>

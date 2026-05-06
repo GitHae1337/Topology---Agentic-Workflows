@@ -11,8 +11,9 @@ const COLUMN_LABELS: Record<string, string> = {
   price_per_person: '1인 가격(원)',
   price_per_night: '1박 가격(원)',
   room_type: '객실 유형',
-  house_rules: '하우스 룰',
+  house_rules: '숙소 규약',
   max_occupancy: '최대 인원',
+  minimum_nights: '최소 숙박일',
   rating: '평점',
   address: '주소',
   category: '카테고리',
@@ -37,7 +38,10 @@ const ReferenceContent = ({ item }: { item: TravelPlannerReferenceItem }) => {
     const HIDDEN_PATTERNS = [
       /^latitude$/i,
       /^longitude$/i,
-      /^city$/i,
+      // 'city' is intentionally NOT hidden here. Single-city tasks have
+      // a uniform city column which the uniform-filter below removes
+      // automatically; multi-city (5/7-day) tasks vary, and the user
+      // wants to see which option is in which city.
       /^unnamed/i,
       /average/i,
       /aggregate/i,

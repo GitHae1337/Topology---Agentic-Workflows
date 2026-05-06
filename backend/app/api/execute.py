@@ -90,10 +90,22 @@ def _build_reference_prompt(task_id: str) -> Optional[str]:
     )
 
     body = "\n\n".join(sections)
+    schema_note = (
+        "\n\n[출력 형식 안내 — 최종 plan 작성 시]\n"
+        "최종 plan은 list of dict 형식으로 ```python ... ``` 코드 블록 안에 넣어주세요.\n"
+        "각 day dict에 다음 키들을 포함:\n"
+        "- days, current_city, transportation, breakfast, lunch, dinner, attraction, accommodation\n"
+        "- description: 그 날의 흐름과 분위기를 자연어 2~3 문장으로 풍부하게 서술 "
+        "(예: \"오전에는 KTX로 강릉에 도착해 정동진 해변에서 일출을 즐깁니다. "
+        "점심은 초당순두부에서 든든하게, 오후에는 오죽헌을 둘러본 뒤 저녁엔 "
+        "강릉 회마을에서 회를 즐기며 하루를 마무리합니다.\")\n"
+        "description은 단순 데이터 나열이 아닌 자연스러운 한국어 서술이어야 합니다.\n"
+    )
     return (
         "[참고 자료 — 일정 작성에 사용할 수 있는 후보 목록. 이름은 그대로 사용할 것]\n\n"
         + body
-        + "\n\n[사용자 요청]\n"
+        + schema_note
+        + "\n[사용자 요청]\n"
     )
 
 

@@ -16,6 +16,9 @@ export interface PlanDay {
   dinner?: string;
   attraction?: string;
   accommodation?: string;
+  // LLM-written 2-3 sentence Korean narrative for the day. Optional —
+  // backend prompt requests it; graceful when absent.
+  description?: string;
   [key: string]: unknown;
 }
 

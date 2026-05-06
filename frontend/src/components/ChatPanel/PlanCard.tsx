@@ -66,6 +66,11 @@ export const PlanCard = ({ plan }: PlanCardProps) => {
           <div className="text-xs font-semibold text-white mb-1.5">
             📅 {day.days}일차 · {day.current_city}
           </div>
+          {!isEmpty(day.description) && (
+            <div className="text-[12px] text-[#d4d4d4] leading-relaxed pb-2 mb-1.5 border-b border-[#262626]">
+              {String(day.description)}
+            </div>
+          )}
           {!isEmpty(day.transportation) && (
             <Row icon="🚆" label="교통" value={String(day.transportation)} />
           )}

@@ -2,12 +2,54 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Any
 from datetime import datetime
+from pathlib import Path
 import json
 import os
 import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# ----- EvaluationPanel self-assessment guide logging (Stage 1) -----
+# Two streams written to backend/data/logs/evaluations.jsonl:
+#   A. Hidden automatic evaluation snapshot per LLM iteration
+#   B. Dimension expand/collapse events from the guide UI
+EVAL_LOG_DIR = Path(__file__).resolve().parents[2] / "data" / "logs"
+EVAL_LOG_PATH = EVAL_LOG_DIR / "evaluations.jsonl"
+
+
+class GuideAction(BaseModel):
+    type: str  # 'expand' | 'collapse'
+    dimensionId: str
+
+
+class EvaluationLogRequest(BaseModel):
+    timestamp: str
+    sessionId: str
+    participantId: str
+    taskId: str
+    iterationIndex: int
+    automaticEvaluation: Optional[Any] = None
+    guideAction: Optional[GuideAction] = None
+
+
+@router.post("/evaluation")
+async def log_evaluation(req: EvaluationLogRequest):
+    """Append one log row to backend/data/logs/evaluations.jsonl.
+
+    Either automaticEvaluation (Stream A) or guideAction (Stream B) is
+    populated per row. Researcher greps by sessionId / participantId for
+    post-hoc analysis.
+    """
+    EVAL_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    row = req.model_dump()
+    kind = "guide" if req.guideAction else "auto"
+    print(f"[logs.evaluation] appending {kind} log: session={req.sessionId} "
+          f"iter={req.iterationIndex} task={req.taskId}")
+    with EVAL_LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return {"ok": True}
 
 
 class TopologyInfo(BaseModel):

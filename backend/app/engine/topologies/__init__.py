@@ -6,6 +6,8 @@ from .hierarchical import HierarchicalExecutor
 from .mesh import MeshExecutor
 # from .dag import DAGExecutor  # deprecated for the 5-topology study
 from .cycle import CycleExecutor
+from .sas import SASExecutor
+from .independent import IndependentExecutor
 
 __all__ = [
     "BaseTopologyExecutor",
@@ -17,6 +19,8 @@ __all__ = [
     "MeshExecutor",
     # "DAGExecutor",  # deprecated for the 5-topology study
     "CycleExecutor",
+    "SASExecutor",
+    "IndependentExecutor",
 ]
 
 # Factory function to get executor by topology type
@@ -30,6 +34,8 @@ def get_executor(topology_type: str) -> BaseTopologyExecutor:
         "mesh": MeshExecutor(),
         # "dag": DAGExecutor(),  # deprecated for the 5-topology study
         "cycle": CycleExecutor(),
+        "sas": SASExecutor(),
+        "independent": IndependentExecutor(),
     }
     executor = executors.get(topology_type)
     if not executor:

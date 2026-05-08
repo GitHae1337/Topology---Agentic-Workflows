@@ -11,6 +11,8 @@ class TopologyType(str, Enum):
     MESH = "mesh"
     # DAG = "dag"  # deprecated for the 5-topology study
     CYCLE = "cycle"
+    SAS = "sas"
+    INDEPENDENT = "independent"
 
 
 class EdgeType(str, Enum):

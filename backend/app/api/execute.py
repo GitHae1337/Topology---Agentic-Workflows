@@ -91,7 +91,11 @@ def _build_reference_prompt(task_id: str) -> Optional[str]:
 
     body = "\n\n".join(sections)
     schema_note = (
-        "\n\n[출력 형식 안내 — 최종 plan 작성 시]\n"
+        "\n\n[언어 안내]\n"
+        "모든 답변은 반드시 한국어로 작성하세요. agent 간의 대화, 분석, "
+        "최종 답변, plan의 description까지 전부 한국어입니다. 영어로 답변하지 "
+        "마세요 (도시명·식당명 등 고유명사는 참고 자료의 한국어 그대로 사용).\n"
+        "\n[출력 형식 안내 — 최종 plan 작성 시]\n"
         "최종 plan은 list of dict 형식으로 ```python ... ``` 코드 블록 안에 넣어주세요.\n"
         "각 day dict에 다음 키들을 포함:\n"
         "- days, current_city, transportation, breakfast, lunch, dinner, attraction, accommodation\n"

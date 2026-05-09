@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useCanvasStore, ChatSession } from '../../store/canvasStore';
 import { useSessionStore } from '../../store';
 import { workflowApi, executeApi, convertToApiFormat, logsApi } from '../../api/workflow';
-import { parsePlan } from '../../utils/planParser';
+import { parsePlan, extractNarrative } from '../../utils/planParser';
 import { PlanCard } from './PlanCard';
 
 interface ApprovalData {
@@ -606,6 +606,13 @@ export const ChatPanel = () => {
   }, [logEntries]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME guard: while a Korean/Japanese/Chinese composition is in progress
+    // (e.g. user is mid-character on Hangul), Enter is the IME's "commit"
+    // signal — sending here would race the commit and the last char ends
+    // up re-inserted into the cleared input. Skip until composition ends.
+    if (e.nativeEvent.isComposing || (e.nativeEvent as KeyboardEvent).keyCode === 229) {
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -773,10 +780,14 @@ export const ChatPanel = () => {
                     </div>
                   );
                 }
-                // For assistant messages, try to extract a plan and render it
-                // as Korean day cards instead of the raw LLM output. Falls
-                // back to raw content if parsing fails.
+                // For assistant messages, render natural-language commentary
+                // (above) AND the parsed plan as a PlanCard (below) so chat
+                // feels like a dialogue, not a silent plan dump. Falls back
+                // to raw content when no plan is parseable.
                 const parsedPlan = msg.role === 'assistant' ? parsePlan(msg.content) : null;
+                const narrative = msg.role === 'assistant' && parsedPlan
+                  ? extractNarrative(msg.content)
+                  : '';
                 return (
                   <div
                     key={msg.id}
@@ -791,7 +802,18 @@ export const ChatPanel = () => {
                           : 'max-w-[95%] w-full bg-[#262626] text-white'
                       }`}
                     >
-                      {parsedPlan ? <PlanCard plan={parsedPlan} /> : msg.content}
+                      {parsedPlan ? (
+                        <div className="space-y-2">
+                          {narrative && (
+                            <div className="whitespace-pre-wrap leading-relaxed">
+                              {narrative}
+                            </div>
+                          )}
+                          <PlanCard plan={parsedPlan} />
+                        </div>
+                      ) : (
+                        msg.content
+                      )}
                     </div>
                   </div>
                 );

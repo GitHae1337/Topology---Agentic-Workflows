@@ -43,12 +43,19 @@ export const getPlaceholderConfig = (
       return {
         nodes: [
           { x: centerX, y: 30, label: 'Manager', isMain: true },
-          { x: centerX - 70, y: bodyH - 40, label: 'Worker' },
-          { x: centerX + 70, y: bodyH - 40, label: 'Worker' },
+          { x: centerX - 90, y: bodyH - 40, label: 'Worker' },
+          { x: centerX, y: bodyH - 40, label: 'Worker' },
+          { x: centerX + 90, y: bodyH - 40, label: 'Worker' },
         ],
         edges: [
+          // Manager ↔ each worker
           { from: 0, to: 1, bidirectional: true },
           { from: 0, to: 2, bidirectional: true },
+          { from: 0, to: 3, bidirectional: true },
+          // Worker peer mesh
+          { from: 1, to: 2, bidirectional: true },
+          { from: 2, to: 3, bidirectional: true },
+          { from: 1, to: 3, bidirectional: true },
         ],
       };
 

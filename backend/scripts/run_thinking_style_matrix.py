@@ -34,6 +34,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from dotenv import load_dotenv
+
+# Load OPENAI_API_KEY from backend/.env (same convention as run_benchmarks.py).
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 from backend.app.benchmarks.travelplanner.dataset import (
     TravelPlannerProblem,
     load_problems,
@@ -219,15 +224,31 @@ async def main_async(args: argparse.Namespace) -> None:
     selected_problems = [by_id[tid] for tid in task_ids]
 
     pf = load_prompts(args.prompts)
-    by_task_style = {(r.task_id, r.style_id): r for r in flatten(pf, selected_problems)}
+    by_task_style = {(r.task_id, r.style_id): r for r in flatten(pf, problems)}
 
     topologies = [t.strip().lower() for t in args.topologies.split(",") if t.strip()]
     for t in topologies:
         if t not in PDF_PRESETS:
             raise ValueError(f"unknown topology {t}; valid: {list(PDF_PRESETS)}")
 
+    if args.resume is not None:
+        args.output = args.resume
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[run_thinking_style_matrix] writing → {args.output}")
+
+    done_keys: set[tuple[str, str, str]] = set()
+    if args.resume is not None and args.resume.exists():
+        with args.resume.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                done_keys.add((rec["task_id"], rec["style_id"], rec["topology"]))
+        print(f"[run_thinking_style_matrix] resume: {len(done_keys)} trials already in {args.resume}")
+
+    open_mode = "a" if args.resume is not None else "w"
+    print(f"[run_thinking_style_matrix] {'appending' if open_mode == 'a' else 'writing'} → {args.output}")
 
     plan_to_run: list[tuple[TravelPlannerProblem, PromptRecord, str]] = []
     for problem in selected_problems:
@@ -242,10 +263,21 @@ async def main_async(args: argparse.Namespace) -> None:
             for topo in topologies:
                 plan_to_run.append((problem, by_task_style[key], topo))
 
-    print(f"[run_thinking_style_matrix] total trials: {len(plan_to_run)}")
+    skip_count = sum(1 for p, r, t in plan_to_run if (p.task_id, r.style_id, t) in done_keys)
+    print(
+        f"[run_thinking_style_matrix] total trials: {len(plan_to_run)} "
+        f"(will skip {skip_count} already-done)"
+    )
 
-    with args.output.open("w", encoding="utf-8") as f:
+    with args.output.open(open_mode, encoding="utf-8") as f:
         for i, (problem, record, topo) in enumerate(plan_to_run, 1):
+            key = (problem.task_id, record.style_id, topo)
+            if key in done_keys:
+                print(
+                    f"[run_thinking_style_matrix] [{i}/{len(plan_to_run)}] "
+                    f"skip (already done): {problem.task_id}/{record.style_id}/{topo}"
+                )
+                continue
             print(
                 f"[run_thinking_style_matrix] [{i}/{len(plan_to_run)}] "
                 f"{problem.task_id}/{record.style_id}/{topo}"
@@ -305,6 +337,12 @@ def main() -> None:
         / "data"
         / "thinking_styles"
         / f"matrix_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl",
+    )
+    p.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="resume: append to this jsonl and skip (task_id, style_id, topology) already in it",
     )
     args = p.parse_args()
 

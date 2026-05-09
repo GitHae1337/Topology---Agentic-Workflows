@@ -148,32 +148,47 @@ Decompose the task now and assign subtasks to your workers."""
             results_context = self._build_results_context(all_round_results, agents)
             peer_context = self._build_peer_context(all_peer_results) if all_peer_results else ""
 
-            review_prompt = f"""You are the manager coordinating a team of worker agents.
+            # Build a human-readable list of available worker names so the
+            # prompt examples use the exact strings the parser matches on.
+            worker_list_str = ", ".join(worker_names)
+            example_pair = (
+                f"{worker_names[0]},{worker_names[1]}"
+                if len(worker_names) >= 2 else worker_names[0]
+            )
 
-Original Task: {input_message}
+            review_prompt = f"""당신은 worker agent들을 조율하는 매니저입니다.
 
-Results from previous rounds:
+원래 task: {input_message}
+
+이전 라운드 결과:
 {results_context}
 {f'''
-Peer Discussion Results:
+이전 peer 토론 결과:
 {peer_context}
 ''' if peer_context else ''}
 
-Review these results and decide your next action. You can:
+위 결과를 검토하고 다음 행동을 결정하세요. 명령은 반드시 아래 형식 그대로
+출력하세요. 자연어로 풀어서 말하면 시스템이 인식하지 못합니다.
 
-1. Assign new tasks to workers:
-   [ASSIGN:WorkerName] <new task for this worker>
+1. 특정 worker에게 새 task를 할당:
+   [ASSIGN:WorkerName] <새 task>
+   예: [ASSIGN:{worker_names[0]}] 숙소 가격을 다시 검토해주세요
 
-2. Instruct peer discussions between workers for cross-verification:
-   [PEER:WorkerA,WorkerB] <instruction for their discussion>
+2. 두 worker가 직접 토론하도록 지시 (서로의 결과를 교차 검증):
+   [PEER:WorkerA,WorkerB] <토론 지시>
+   예: [PEER:{example_pair}] 두 분 결과에서 일정 충돌이 있는지 교차 검증해주세요
 
-   Example: [PEER:{worker_names[0]},{worker_names[1]}] Cross-verify your findings
-
-3. If you have sufficient information, synthesize the final answer:
+3. 충분한 정보가 모였으면 최종 답변을 합치기:
    [FINAL SYNTHESIS]
-   <your synthesis of all findings>
+   <최종 답변>
 
-What is your decision?"""
+사용 가능한 worker 이름 (이 이름을 그대로 사용하세요):
+{worker_list_str}
+
+소통/조율이 필요한 worker pair가 있으면 [PEER:...] 명령을 적극 활용하세요.
+한 응답에 여러 명령을 동시에 사용해도 됩니다.
+
+당신의 결정은?"""
 
             manager_response = await self.call_agent(
                 manager_agent,

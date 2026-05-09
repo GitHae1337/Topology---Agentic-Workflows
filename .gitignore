@@ -35,3 +35,6 @@ logs/
 
 # TypeScript
 *.tsbuildinfo
+
+# Claude Code local state
+.claude/

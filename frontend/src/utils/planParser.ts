@@ -55,6 +55,23 @@ function tryParse(span: string): PlanDay[] | null {
   return isListOfDicts(parsed) ? parsed : null;
 }
 
+// Strip code fences and bare list-of-dicts spans from the LLM reply, leaving
+// the natural-language commentary (greetings, change descriptions, follow-up
+// questions). Used by ChatPanel to render the conversational portion above
+// the PlanCard so the chat actually feels like a dialogue rather than a
+// silent plan dump.
+export function extractNarrative(text: string): string {
+  if (!text) return '';
+  // Remove ```python/json/``` fenced blocks (case-insensitive, multi-line).
+  let stripped = text.replace(/```(?:python|json)?\s*[\s\S]*?```/gi, '');
+  // Remove bare list-of-dicts spans (parser fallback path) so dialogue-only
+  // remnants don't include the raw structure.
+  stripped = stripped.replace(/\[\s*\{[\s\S]*?\}\s*\]/g, '');
+  // Collapse 3+ newlines to 2 for tidier display.
+  stripped = stripped.replace(/\n{3,}/g, '\n\n');
+  return stripped.trim();
+}
+
 export function parsePlan(text: string): PlanDay[] | null {
   if (!text) return null;
 

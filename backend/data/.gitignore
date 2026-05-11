@@ -1,2 +1,3 @@
 HumanEval.jsonl
 *.jsonl
+!thinking_styles/*.jsonl

@@ -1,0 +1,6 @@
+topology,valid_cost,valid_cuisine,valid_room_rule,valid_room_type,valid_transportation
+sas,417,417,417,417,417
+independent,433,433,433,433,433
+centralized,411,411,411,411,411
+decentralized,432,432,432,432,432
+hybrid,389,389,389,389,389

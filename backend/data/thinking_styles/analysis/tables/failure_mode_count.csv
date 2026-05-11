@@ -1,0 +1,6 @@
+topology,passed,hard_constraint_fail,commonsense_fail,no_plan
+sas,105,101,242,2
+independent,122,115,213,0
+centralized,140,93,208,9
+decentralized,130,116,204,0
+hybrid,190,64,192,4

@@ -1,0 +1,5 @@
+style,diag_value,row_max_value,row_argmax_topology,n_cells_at_max,diag_is_strict_winner,diag_tied_with_max
+sas,0.2222222222222222,0.2222222222222222,sas,4,False,True
+independent,0.1111111111111111,0.2222222222222222,centralized,1,False,False
+centralized,0.0,0.2222222222222222,decentralized,1,False,False
+decentralized,0.1111111111111111,0.1111111111111111,independent,2,False,True

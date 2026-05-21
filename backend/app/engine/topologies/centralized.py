@@ -96,10 +96,8 @@ Current Task: {input_message}
 Your job is to decompose this task into subtasks and assign each subtask to a specific sub-agent.
 {f"Note: Consider the previous conversation context when decomposing the task." if history_context else ""}
 
-IMPORTANT: You must respond in this exact format for each agent assignment:
-[ASSIGN:{agent_names[0]}] <subtask for this agent>
-[ASSIGN:{agent_names[1]}] <subtask for this agent>
-...and so on for each agent.
+IMPORTANT: You must respond in this exact format, with one [ASSIGN:...] line per sub-agent listed above (do not skip any):
+{chr(10).join(f"[ASSIGN:{name}] <subtask for this agent>" for name in agent_names)}
 
 Decompose the task now and assign subtasks to your sub-agents."""
 
@@ -286,6 +284,7 @@ Synthesize all findings into a final, comprehensive answer to the original task.
 
             # Build prompt with agent's previous output for context
             previous_outputs = agent_histories.get(agent.id, [])
+            reference_only = self.extract_reference(input_message)
 
             if previous_outputs:
                 previous_context = "\n".join([
@@ -294,22 +293,22 @@ Synthesize all findings into a final, comprehensive answer to the original task.
                 ])
                 prompt = f"""You are a sub-agent following the orchestrator's instructions.
 
-Original task: {input_message}
+{reference_only}
 
 Your previous outputs:
 {previous_context}
 
 Subtask from orchestrator: {subtask}
 
-Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
+Execute this subtask. Provide your response."""
             else:
                 prompt = f"""You are a sub-agent following the orchestrator's instructions.
 
-Original task: {input_message}
+{reference_only}
 
 Subtask from orchestrator: {subtask}
 
-Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
+Execute this subtask. Provide your response."""
 
             response = await self.call_agent(
                 agent,

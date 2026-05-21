@@ -92,10 +92,8 @@ Task: {input_message}
 
 Your job is to decompose this task into subtasks and assign each subtask to a specific worker.
 
-IMPORTANT: You must respond in this exact format for each worker assignment:
-[ASSIGN:{worker_names[0]}] <subtask for this worker>
-[ASSIGN:{worker_names[1]}] <subtask for this worker>
-...and so on for each worker.
+IMPORTANT: You must respond in this exact format, with one [ASSIGN:...] line per worker listed above (do not skip any):
+{chr(10).join(f"[ASSIGN:{name}] <subtask for this worker>" for name in worker_names)}
 
 Decompose the task now and assign subtasks to your workers."""
 
@@ -375,6 +373,7 @@ Synthesize all findings into a final, comprehensive answer to the original task.
                 return agent.id, ""
 
             previous_outputs = agent_outputs.get(agent.id, [])
+            reference_only = self.extract_reference(input_message)
 
             if previous_outputs:
                 previous_context = "\n".join([
@@ -383,22 +382,22 @@ Synthesize all findings into a final, comprehensive answer to the original task.
                 ])
                 prompt = f"""You are a worker following the manager's instructions.
 
-Original task: {input_message}
+{reference_only}
 
 Your previous outputs:
 {previous_context}
 
 Subtask from manager: {subtask}
 
-Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
+Execute this subtask. Provide your response."""
             else:
                 prompt = f"""You are a worker following the manager's instructions.
 
-Original task: {input_message}
+{reference_only}
 
 Subtask from manager: {subtask}
 
-Execute this subtask while keeping the original task's overall goal in mind. Provide your response."""
+Execute this subtask. Provide your response."""
 
             response = await self.call_agent(
                 agent,
@@ -439,9 +438,10 @@ Execute this subtask while keeping the original task's overall goal in mind. Pro
             peer_task = agent_tasks.get(peer.id, "No specific task")
             peer_output = agent_outputs.get(peer.id, ["No output yet"])[-1] if agent_outputs.get(peer.id) else "No output yet"
 
+            reference_only = self.extract_reference(input_message)
             prompt = f"""You are a worker participating in a peer discussion with {peer.name}.
 
-Original task: {input_message}
+{reference_only}
 
 Your Subtask: {agent_task}
 Your Output: {agent_output}
@@ -451,7 +451,7 @@ Your Output: {agent_output}
 
 Manager's Instruction for this discussion: {instruction}
 
-Discuss with your peer and provide your insights based on the manager's instruction. Keep the original task's overall goal in mind."""
+Discuss with your peer and provide your insights based on the manager's instruction."""
 
             response = await self.call_agent(
                 agent,

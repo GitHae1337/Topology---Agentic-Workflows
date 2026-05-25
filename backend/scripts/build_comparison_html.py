@@ -68,12 +68,23 @@ HTML = r"""<!doctype html>
   #content { padding: 20px 24px; overflow: auto; flex: 1; }
   .pane.dragover { background: #eef6ff; outline: 2px dashed #4a90e2; outline-offset: -16px; }
   #content h1 { font-size: 18px; }
-  #content h2 { font-size: 16px; margin-top: 18px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
-  #content h3 { font-size: 14px; margin-top: 14px; color: #1a4c8b; }
-  #content code, #content pre { font-family: ui-monospace, monospace; font-size: 12px; }
-  #content pre { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
+  #content h2 { font-size: 16px; margin-top: 22px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  #content h3 { font-size: 14px; margin-top: 18px; color: #1a4c8b; background: #eef4fb; padding: 4px 8px; border-radius: 3px; }
+  #content h4 { font-size: 12px; margin-top: 12px; margin-bottom: 4px; color: #555; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  #content code, #content pre { font-family: ui-monospace, monospace; font-size: 11px; }
+  #content pre { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; line-height: 1.45; }
   #content blockquote { border-left: 3px solid #ccc; margin: 0; padding: 4px 12px; color: #555; }
   #content ul { padding-left: 20px; }
+  #content hr { border: none; border-top: 2px solid #ddd; margin: 18px 0; }
+  #content details { margin: 6px 0; }
+  #content details > summary { cursor: pointer; font-size: 11px; color: #777; padding: 3px 0; user-select: none; }
+  #content details > summary:hover { color: #1a4c8b; }
+  #content details[open] > summary { color: #444; margin-bottom: 4px; }
+  #content details > pre { margin-top: 4px; background: #fafafa; }
+  #content .agent-header { font-size: 13px; font-weight: 600; color: #1a4c8b; }
+  #content .role-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #e5e5e5; color: #444; margin-left: 6px; vertical-align: middle; }
+  #content .ok { color: #2e7d32; }
+  #content .bad { color: #c62828; }
 </style>
 </head>
 <body>
@@ -303,80 +314,177 @@ document.addEventListener('click', e => {
   renderTrial(row, model);
 });
 
-// ---------- render trial as markdown -> HTML ----------
+// ---------- render trial as plain text -> single <pre> ----------
 function renderTrial(row, model) {
-  const md = trialToMarkdown(row);
-  document.getElementById('content').innerHTML = marked.parse(md);
+  const text = trialToText(row);
+  document.getElementById('content').innerHTML = '<pre class="trace-text">' + escapeHtml(text) + '</pre>';
   const meta = state.rowMeta.get(rowKey(row.task_id, row.style_id, row.topology));
   document.getElementById('fname').textContent =
     model.label + ' / ' + row.task_id + ' / ' + row.style_id + ' → ' + row.topology;
 }
 
-function trialToMarkdown(row) {
+function stripReference(text) {
+  // Remove "Reference Information:\n{sandbox data}" block from any content
+  // (system prompt or user msg). Walk from "Reference Information:" until the
+  // next wrapper marker or the new "User's styled request:" marker (paper-style
+  // task_instance format) or end of text. Replaces with a short placeholder.
+  const refMarker = 'Reference Information:';
+  const rIdx = text.indexOf(refMarker);
+  if (rIdx === -1) return text;
+  const endMarkers = [
+    "\n\nUser's styled request:",
+    '\n\nQuery: ',
+    '\n\nSubtask from orchestrator:',
+    "\n\nManager's Instruction",
+    '\n\nExecute this subtask',
+    '\n\nWorker plans:',
+    '\n\n[ASSIGN',
+    '\n\nYour Subtask:',
+    '\n\nThis is Round',
+    '\n\nBased on all perspectives',
+    '\n\nYou are the Aggregator',
+  ];
+  let rEnd = text.length;
+  for (const em of endMarkers) {
+    const ei = text.indexOf(em, rIdx);
+    if (ei !== -1 && ei < rEnd) rEnd = ei;
+  }
+  return text.slice(0, rIdx) + '[reference info omitted]' + text.slice(rEnd);
+}
+
+function trialToText(row) {
+  // Plain-text trace dump. ===== bars for major sections, ----- bars for sub.
+  // No markdown — caller renders inside a single <pre>.
   const m = row.metrics || {};
   const pass = !!m.final_pass;
   const lines = [];
-  lines.push('# ' + row.task_id + ' | style=' + row.style_id + ' -> topology=' + row.topology);
+  const bar = '=========================================================================';
+  const sub = '-------------------------------------------------------------------------';
+
+  lines.push(bar);
+  lines.push(row.task_id + '  |  style=' + row.style_id + '  ->  topology=' + row.topology);
+  lines.push(bar);
+  lines.push('model: ' + row.model + '  |  temperature: ' + row.temperature + '  |  reasoning_effort: ' + row.reasoning_effort);
+  lines.push('final: ' + (pass ? 'PASS' : 'FAIL') + '  (delivery=' + m.delivery + ', commonsense_macro=' + m.commonsense_pass_macro + ', hard_macro=' + m.hard_pass_macro + ')');
+  lines.push('duration: ' + (row.duration_seconds || 0).toFixed(1) + 's  |  level: ' + row.level + '  |  days: ' + row.days);
   lines.push('');
-  lines.push('- model: `' + row.model + '`');
-  lines.push('- final: **' + (pass ? 'PASS' : 'FAIL') + '**  (delivery=' + m.delivery +
-    ', commonsense_macro=' + m.commonsense_pass_macro + ', hard_macro=' + m.hard_pass_macro + ')');
-  lines.push('- duration: ' + (row.duration_seconds || 0).toFixed(1) + 's  |  message_count: ' + row.message_count);
-  lines.push('- temperature: ' + row.temperature + '  |  reasoning_effort: ' + row.reasoning_effort);
-  lines.push('- level: ' + row.level + '  |  days: ' + row.days);
+  lines.push('USER\'S QUERY');
+  lines.push(sub);
+  lines.push(row.query || '');
   lines.push('');
-  lines.push('## Query');
+
+  const calls = row.llm_calls || [];
+  lines.push(bar);
+  lines.push('EXECUTION FLOW (' + calls.length + ' LLM calls, reference info stripped)');
+  lines.push(bar);
   lines.push('');
-  lines.push('> ' + (row.query || '').replace(/\n/g, '\n> '));
-  lines.push('');
-  const msgs = row.messages || [];
-  lines.push('## Trace (' + msgs.length + ' messages)');
-  lines.push('');
-  if (!msgs.length) lines.push('_(no messages — single-shot or empty trace)_');
-  msgs.forEach((mm, i) => {
-    const frm = mm.from_agent || mm.role || mm.name || '?';
-    const to = mm.to_agent || '';
-    const meta = mm.metadata || {};
-    let metaTail = '';
-    const keep = {};
-    ['turn','phase','round','stage','kind','type'].forEach(k => { if (meta[k] !== undefined) keep[k] = meta[k]; });
-    if (Object.keys(keep).length) metaTail = ' · ' + Object.entries(keep).map(([k,v]) => k+'='+v).join(' ');
-    lines.push('### [' + i + '] ' + frm + ' -> ' + to + metaTail);
-    lines.push('');
-    lines.push(contentToString(mm.content));
-    lines.push('');
-  });
-  // check breakdown
-  lines.push('## Check breakdown');
-  lines.push('');
-  ['Commonsense', 'Hard'].forEach(kind => {
-    const src = (kind === 'Commonsense') ? m.commonsense_per_item : m.hard_per_item;
-    lines.push('**' + kind + ':**');
-    if (!src || !Object.keys(src).length) { lines.push('- (no items)'); lines.push(''); return; }
-    const fail = [], pass = [], na = [];
-    for (const [name, entry] of Object.entries(src)) {
-      if (Array.isArray(entry) && entry.length >= 1) {
-        const flag = entry[0], reason = entry[1];
-        if (flag === false) fail.push([name, reason]);
-        else if (flag === null) na.push([name, reason]);
-        else pass.push([name, reason]);
-      }
-    }
-    fail.forEach(([n, r]) => lines.push('- ❌ `' + n + '` — ' + (r || '')));
-    pass.forEach(([n])    => lines.push('- ✅ `' + n + '`'));
-    na.forEach(([n])      => lines.push('- ➖ `' + n + '` (N/A)'));
-    lines.push('');
-  });
-  if (row.final_output !== undefined && row.final_output !== null) {
-    lines.push('## Final output');
-    lines.push('');
-    if (typeof row.final_output === 'string') {
-      lines.push('```'); lines.push(row.final_output); lines.push('```');
-    } else {
-      lines.push('```json'); lines.push(JSON.stringify(row.final_output, null, 2)); lines.push('```');
+
+  if (!calls.length) {
+    lines.push('(no llm_calls captured — older run or save-trace off)');
+    const msgs = row.messages || [];
+    if (msgs.length) {
+      lines.push('');
+      lines.push('Broadcast messages (agent outputs only):');
+      msgs.forEach((mm, i) => {
+        const frm = mm.from_agent || mm.role || mm.name || '?';
+        const to = mm.to_agent || '';
+        lines.push('');
+        lines.push(sub);
+        lines.push('[' + i + '] ' + frm + ' -> ' + to);
+        lines.push(sub);
+        lines.push(contentToString(mm.content));
+      });
     }
     lines.push('');
   }
+
+  calls.forEach((cc, i) => {
+    const ag = cc.agent_name || cc.agent_id || '?';
+    const mdl = cc.model || '?';
+    const cmsgs = cc.messages || [];
+    let roleTag = '';
+    if (/^Leader$|^Manager$/i.test(ag)) roleTag = 'orchestrator';
+    else if (/^(Member|Worker|Planner)-/i.test(ag)) roleTag = 'sub-agent';
+    else if (/^Aggregator$/i.test(ag)) roleTag = 'synthesizer';
+    else if (/^Solo$/i.test(ag)) roleTag = 'single-agent';
+    const outLen = (cc.output || '').length;
+    const inLen = cmsgs.reduce((s, mm) => s + (contentToString(mm.content) || '').length, 0);
+
+    lines.push(bar);
+    lines.push('[' + i + ']  ' + ag + '  (' + mdl + ')  ·  ' + roleTag + '  ·  in=' + inLen + ' / out=' + outLen + ' chars');
+    lines.push(bar);
+    lines.push('');
+
+    if (cc.system) {
+      lines.push(sub);
+      lines.push('System prompt');
+      lines.push(sub);
+      lines.push(stripReference(contentToString(cc.system)));
+      lines.push('');
+    }
+
+    cmsgs.forEach((mm, j) => {
+      const idxTag = cmsgs.length > 1 ? ' [' + (j + 1) + '/' + cmsgs.length + ']' : '';
+      lines.push(sub);
+      lines.push('Round prompt' + idxTag);
+      lines.push(sub);
+      lines.push(stripReference(contentToString(mm.content)));
+      lines.push('');
+    });
+
+    lines.push(sub);
+    lines.push('Output');
+    lines.push(sub);
+    lines.push(contentToString(cc.output));
+    lines.push('');
+  });
+
+  // Evaluation result
+  lines.push(bar);
+  lines.push('EVALUATION RESULT');
+  lines.push(bar);
+  ['Commonsense', 'Hard'].forEach(kind => {
+    const src = (kind === 'Commonsense') ? m.commonsense_per_item : m.hard_per_item;
+    lines.push('');
+    lines.push(kind + ':');
+    if (!src || !Object.keys(src).length) { lines.push('  (no items)'); return; }
+    for (const [name, entry] of Object.entries(src)) {
+      let flag = null, reason = null;
+      if (Array.isArray(entry) && entry.length >= 1) { flag = entry[0]; reason = entry[1]; }
+      let mark;
+      if (flag === false) mark = '[FAIL]';
+      else if (flag === null) mark = '[N/A] ';
+      else mark = '[PASS]';
+      lines.push('  ' + mark + '  ' + name + (reason ? '  —  ' + reason : ''));
+    }
+  });
+  lines.push('');
+
+  if (row.final_output !== undefined && row.final_output !== null) {
+    lines.push(bar);
+    lines.push('FINAL OUTPUT');
+    lines.push(bar);
+    if (typeof row.final_output === 'string') {
+      lines.push(row.final_output);
+    } else {
+      lines.push(JSON.stringify(row.final_output, null, 2));
+    }
+    lines.push('');
+  }
+  if (row.parsed_plan !== undefined && row.parsed_plan !== null) {
+    lines.push(bar);
+    lines.push('PARSED PLAN');
+    lines.push(bar);
+    lines.push(JSON.stringify(row.parsed_plan, null, 2));
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+// kept for reference / external .md fallback — markdown path now unused for trials
+function trialToMarkdown(row) {
+  const lines = [];
   if (row.parsed_plan !== undefined && row.parsed_plan !== null) {
     lines.push('## Parsed plan');
     lines.push('');

@@ -21,6 +21,10 @@ class TopologyResult(BaseModel):
 class BaseTopologyExecutor(ABC):
     """Abstract base class for topology executors."""
 
+    def __init__(self):
+        # Trace log for LLM calls (read by runner with --save-trace)
+        self._llm_call_log: List[Dict] = []
+
     @abstractmethod
     async def execute(
         self,
@@ -61,6 +65,19 @@ class BaseTopologyExecutor(ABC):
 
         return "Previous conversation:\n" + "\n\n".join(history_parts) + "\n\n---\n\n"
 
+    def extract_reference(self, input_message: str) -> str:
+        """Strip the trailing 'Query: <styled query>' from a build_user_input() string.
+
+        Sub-agents (centralized member, hybrid worker, hybrid peer) should see
+        the reference data but NOT the user's styled query — that stays at the
+        orchestrator level. If the marker is absent, return input_message unchanged.
+        """
+        marker = "\n\nQuery: "
+        idx = input_message.find(marker)
+        if idx == -1:
+            return input_message
+        return input_message[:idx]
+
     def format_user_prompt_with_task(self, task: str, prior_context: str = "") -> str:
         """Standardized user-prompt format that always includes the original task Q.
 
@@ -93,6 +110,18 @@ class BaseTopologyExecutor(ABC):
             messages=messages,
             model=agent.model,
         )
+
+        # Trace log: capture full input+output for offline inspection
+        # (read by runner via executor._llm_call_log when --save-trace is on).
+        self._llm_call_log.append({
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "model": agent.model,
+            "system": agent.instructions or "",
+            "messages": [{"role": m.role, "content": m.content} for m in conversation],
+            "output": response.content,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return response.content
 

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
+from openai import BadRequestError
 
 # Load OPENAI_API_KEY from backend/.env (same convention as run_benchmarks.py).
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -116,6 +117,30 @@ def _resolve_task_ids(args, all_problems: List[TravelPlannerProblem]) -> List[st
             if line.strip() and not line.strip().startswith("#")
         ]
 
+    # --per-level-limit takes precedence over (filter_level, filter_days, limit):
+    # sample N task per level (ignoring days dimension), seed-controlled.
+    if args.per_level_limit:
+        levels_for_sample = list(_parse_csv(args.filter_level)) or ["easy", "medium", "hard"]
+        selected: list[TravelPlannerProblem] = []
+        seen: set[str] = set()
+        for lvl in levels_for_sample:
+            pool = [p for p in all_problems if p.level == lvl]
+            if args.per_level_limit < len(pool):
+                if args.seed is not None:
+                    rng = random.Random(args.seed)
+                    pool = rng.sample(pool, args.per_level_limit)
+                else:
+                    pool = pool[: args.per_level_limit]
+            print(
+                f"[run_thinking_style_matrix]   level={lvl}: {len(pool)} tasks "
+                f"(per-level limit; seed={args.seed})"
+            )
+            for p in pool:
+                if p.task_id not in seen:
+                    seen.add(p.task_id)
+                    selected.append(p)
+        return [p.task_id for p in selected]
+
     levels: List[str | None] = list(_parse_csv(args.filter_level)) or [None]
     days_raw: List[str | None] = list(_parse_csv(args.filter_days)) or [None]
     days_list: List[int | None] = [int(d) if d is not None else None for d in days_raw]
@@ -151,9 +176,11 @@ async def run_one_trial(
     record: PromptRecord,
     topology_name: str,
     model: str,
+    temperature: float,
+    reasoning_effort: str,
     save_trace: bool,
 ) -> dict:
-    topo, agents = get_preset(topology_name, model=model)
+    topo, agents = get_preset(topology_name, model=model, temperature=temperature, reasoning_effort=reasoning_effort)
     agents_dict = {a.id: a for a in agents}
     executor = get_executor(topo.type.value)
 
@@ -179,6 +206,12 @@ async def run_one_trial(
         f"final_pass={metrics.get('final_pass')} duration={duration:.1f}s msgs={len(messages)}"
     )
 
+    llm_calls = list(executor._llm_call_log)
+    print(
+        f"[run_thinking_style_matrix]   captured {len(llm_calls)} LLM calls "
+        f"(sub-agent input/output trace)"
+    )
+
     return {
         "task_id": problem.task_id,
         "level": problem.level,
@@ -187,15 +220,19 @@ async def run_one_trial(
         "used_original": record.used_original,
         "topology": topology_name,
         "model": model,
+        "temperature": temperature,
+        "reasoning_effort": reasoning_effort,
         "query": record.query,
         "duration_seconds": round(duration, 3),
         "message_count": len(messages),
+        "llm_call_count": len(llm_calls),
         "metrics": metrics,
         "final_output": final_output,
         "parsed_plan": plan,
         "messages": (
             [m.model_dump(mode="json") for m in messages] if save_trace else None
         ),
+        "llm_calls": llm_calls if save_trace else None,
     }
 
 
@@ -250,9 +287,20 @@ async def main_async(args: argparse.Namespace) -> None:
     open_mode = "a" if args.resume is not None else "w"
     print(f"[run_thinking_style_matrix] {'appending' if open_mode == 'a' else 'writing'} → {args.output}")
 
+    style_filter: set[str] | None = None
+    if args.styles:
+        style_filter = {s.strip().lower() for s in args.styles.split(",") if s.strip()}
+        all_style_ids = {s.id for s in pf.thinking_styles}
+        unknown = style_filter - all_style_ids
+        if unknown:
+            raise ValueError(f"unknown style id(s) in --styles: {unknown}; available: {all_style_ids}")
+        print(f"[run_thinking_style_matrix] style filter: {sorted(style_filter)}")
+
     plan_to_run: list[tuple[TravelPlannerProblem, PromptRecord, str]] = []
     for problem in selected_problems:
         for style in pf.thinking_styles:
+            if style_filter is not None and style.id not in style_filter:
+                continue
             key = (problem.task_id, style.id)
             if key not in by_task_style:
                 print(
@@ -282,13 +330,48 @@ async def main_async(args: argparse.Namespace) -> None:
                 f"[run_thinking_style_matrix] [{i}/{len(plan_to_run)}] "
                 f"{problem.task_id}/{record.style_id}/{topo}"
             )
-            result = await run_one_trial(
-                problem=problem,
-                record=record,
-                topology_name=topo,
-                model=args.model,
-                save_trace=args.save_trace,
-            )
+            try:
+                result = await run_one_trial(
+                    problem=problem,
+                    record=record,
+                    topology_name=topo,
+                    model=args.model,
+                    temperature=args.temperature,
+                    reasoning_effort=args.reasoning_effort,
+                    save_trace=args.save_trace,
+                )
+            except BadRequestError as e:
+                print(
+                    f"[run_thinking_style_matrix] OPENAI_MODERATION_ERROR "
+                    f"{problem.task_id}/{record.style_id}/{topo}: {e}"
+                )
+                result = {
+                    "task_id": problem.task_id,
+                    "level": problem.level,
+                    "days": problem.days,
+                    "style_id": record.style_id,
+                    "used_original": record.used_original,
+                    "topology": topo,
+                    "model": args.model,
+                    "temperature": args.temperature,
+                    "reasoning_effort": args.reasoning_effort,
+                    "query": record.query,
+                    "duration_seconds": 0.0,
+                    "message_count": 0,
+                    "llm_call_count": 0,
+                    "metrics": {
+                        "delivery": False,
+                        "commonsense_pass_macro": False,
+                        "hard_pass_macro": False,
+                        "final_pass": False,
+                        "commonsense_per_item": None,
+                        "hard_per_item": None,
+                    },
+                    "final_output": f"[OPENAI_MODERATION_ERROR] {str(e)[:500]}",
+                    "parsed_plan": None,
+                    "messages": None,
+                    "llm_calls": None,
+                }
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
             f.flush()
 
@@ -316,7 +399,13 @@ def main() -> None:
         default=None,
         help="cap PER (level, days) cell after filter (sample if --seed given)",
     )
-    p.add_argument("--seed", type=int, default=None, help="seed for sampling under --limit")
+    p.add_argument("--seed", type=int, default=None, help="seed for sampling under --limit / --per-level-limit")
+    p.add_argument(
+        "--per-level-limit",
+        type=int,
+        default=None,
+        help="sample N tasks per level (across all days), seed-controlled. Takes precedence over --limit + --filter-days. Use with --filter-level easy,medium,hard (default if omitted: all three levels).",
+    )
     p.add_argument("--split", type=str, default="validation")
     p.add_argument("--list-only", action="store_true", help="print matching task ids without running")
     # matrix
@@ -326,8 +415,36 @@ def main() -> None:
         default=",".join(DEFAULT_TOPOLOGIES),
         help=f"comma-separated PDF topologies (default: all 5: {DEFAULT_TOPOLOGIES})",
     )
+    p.add_argument(
+        "--styles",
+        type=str,
+        default=None,
+        help="comma-separated style ids to include (e.g. 'sas,independent,centralized,hybrid' to exclude decentralized for 4×4 view). Default: all styles in prompts file.",
+    )
     p.add_argument("--model", type=str, default="gpt-5")
-    p.add_argument("--save-trace", action="store_true", help="store full message trace per trial (heavy)")
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="sampling temperature passed to every agent in the topology preset "
+             "(default 0.0 for max determinism with paper-style multi-stage flow; "
+             "effective on gpt-4.1, gpt-5.4-mini, or gpt-5 family when --reasoning-effort none)",
+    )
+    p.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default="minimal",
+        choices=["none", "minimal", "low", "medium", "high"],
+        help="reasoning effort for gpt-5 family: 'minimal'/'low'/'medium'/'high' "
+             "enables reasoning (temperature ignored by API); 'none' disables reasoning "
+             "and allows temperature/top_p control (default 'minimal' matches previous behavior)",
+    )
+    p.add_argument(
+        "--save-trace",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="save full message trace per trial — leader/sub-agent intermediate outputs (default: enabled for trajectory analysis; pass --no-save-trace to skip)",
+    )
     # paths
     p.add_argument("--prompts", type=Path, default=DEFAULT_PROMPTS_PATH)
     p.add_argument(

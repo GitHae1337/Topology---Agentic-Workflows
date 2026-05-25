@@ -8,9 +8,11 @@ from ..base import LLMService, LLMMessage, LLMResponse
 logger = logging.getLogger(__name__)
 
 # Models that use the new responses.create API
-NEW_API_MODELS = {"gpt-4.1", "gpt-5", "gpt-5.2", "gpt-5-nano", "gpt-5-mini"}
+NEW_API_MODELS = {"gpt-4.1", "gpt-5", "gpt-5.2", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-mini"}
 
-# Models that support reasoning (GPT-5 family)
+# Models that support reasoning (GPT-5 family) — these use reasoning effort + verbosity
+# instead of temperature. gpt-5.4-mini supports temperature, so it's intentionally NOT here
+# and falls through to the temperature-controlled branch below.
 REASONING_MODELS = {"gpt-5", "gpt-5.2", "gpt-5-nano", "gpt-5-mini"}
 
 
@@ -29,6 +31,7 @@ class OpenAIService(LLMService):
         model: str = "gpt-4.1",
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        reasoning_effort: str = "minimal",
     ) -> LLMResponse:
         """Generate a response using OpenAI API."""
         if not self.client:
@@ -38,14 +41,19 @@ class OpenAIService(LLMService):
                 model=model,
             )
 
-        logger.info(f"OpenAI generate: model={model}, messages={len(messages)}")
+        logger.info(f"OpenAI generate: model={model}, messages={len(messages)}, reasoning_effort={reasoning_effort}")
 
-        # Use new responses.create API for new models
+        # Routing:
+        #   GPT-5 family + reasoning_effort='none' → chat.completions.create
+        #     (responses.create rejects 'none'; chat.completions supports it +
+        #      temperature/top_p, per OpenAI gpt-5.2 migration docs)
+        #   GPT-5 family + reasoning ON / GPT-4.1 / gpt-5.4-mini → responses.create
+        #   Older models (gpt-4o etc) → chat.completions.create without reasoning_effort
+        if model in REASONING_MODELS and reasoning_effort == "none":
+            return await self._generate_legacy_api(messages, model, temperature, max_tokens, reasoning_effort="none")
         if model in NEW_API_MODELS:
-            return await self._generate_new_api(messages, model, temperature, max_tokens)
-        else:
-            # Fallback to legacy chat.completions API for older models
-            return await self._generate_legacy_api(messages, model, temperature, max_tokens)
+            return await self._generate_new_api(messages, model, temperature, max_tokens, reasoning_effort)
+        return await self._generate_legacy_api(messages, model, temperature, max_tokens)
 
     async def _generate_new_api(
         self,
@@ -53,6 +61,7 @@ class OpenAIService(LLMService):
         model: str,
         temperature: float,
         max_tokens: int,
+        reasoning_effort: str = "minimal",
     ) -> LLMResponse:
         """Generate using the new responses.create API (GPT-4.1, GPT-5 family)."""
 
@@ -77,32 +86,50 @@ class OpenAIService(LLMService):
 
         # Build request parameters based on model type
         if model in REASONING_MODELS:
-            # GPT-5 family: uses verbosity and reasoning effort
-            response = await self.client.responses.create(
-                model=model,
-                input=input_messages,
-                text={
-                    "format": {
-                        "type": "text"
+            if reasoning_effort == "none":
+                # Reasoning OFF — temperature/top_p available (GPT-4-style prompting)
+                logger.info(f"GPT-5 reasoning OFF: temperature={temperature}, top_p=1")
+                response = await self.client.responses.create(
+                    model=model,
+                    input=input_messages,
+                    text={
+                        "format": {
+                            "type": "text"
+                        }
                     },
-                    "verbosity": "low"
-                },
-                reasoning={
-                    # OpenAI deprecated 'none' for gpt-5; supported values are
-                    # 'minimal' / 'low' / 'medium' / 'high'. Use 'minimal' for
-                    # cheapest+fastest path (matches the previous 'none' intent).
-                    "effort": "minimal"
-                },
-                # HIDDEN: web search tool
-                # tools=[{"type": "web_search"}],
-                store=True,
-                # include=[
-                #     "reasoning.encrypted_content",
-                #     "web_search_call.action.sources"
-                # ]
-            )
+                    reasoning={"effort": "none"},
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    top_p=1,
+                    store=True,
+                )
+            else:
+                # Reasoning ON — uses reasoning effort + verbosity (temperature ignored by API)
+                logger.info(f"GPT-5 reasoning ON: effort={reasoning_effort}")
+                response = await self.client.responses.create(
+                    model=model,
+                    input=input_messages,
+                    text={
+                        "format": {
+                            "type": "text"
+                        },
+                        "verbosity": "low"
+                    },
+                    reasoning={
+                        # Supported values: 'minimal' / 'low' / 'medium' / 'high'
+                        # Use 'none' on the reasoning_effort param to disable reasoning entirely.
+                        "effort": reasoning_effort
+                    },
+                    # HIDDEN: web search tool
+                    # tools=[{"type": "web_search"}],
+                    store=True,
+                    # include=[
+                    #     "reasoning.encrypted_content",
+                    #     "web_search_call.action.sources"
+                    # ]
+                )
         else:
-            # GPT-4.1: uses temperature and max_output_tokens
+            # GPT-4.1, gpt-5.4-mini: uses temperature and max_output_tokens
             response = await self.client.responses.create(
                 model=model,
                 input=input_messages,
@@ -150,20 +177,35 @@ class OpenAIService(LLMService):
         model: str,
         temperature: float,
         max_tokens: int,
+        reasoning_effort: str = None,
     ) -> LLMResponse:
-        """Generate using the legacy chat.completions API (gpt-4o, etc.)."""
+        """Generate using the legacy chat.completions API (gpt-4o, etc.).
+
+        Also used as the GPT-5-reasoning-OFF path: when reasoning_effort='none'
+        is passed, this endpoint supports it as a top-level parameter alongside
+        temperature/top_p (the responses.create API does not).
+        """
 
         formatted_messages = [
             {"role": msg.role, "content": msg.content}
             for msg in messages
         ]
 
-        response = await self.client.chat.completions.create(
-            model=model,
-            messages=formatted_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        kwargs = {
+            "model": model,
+            "messages": formatted_messages,
+            "temperature": temperature,
+        }
+        if reasoning_effort is not None:
+            # gpt-5 family: requires max_completion_tokens, not max_tokens
+            kwargs["reasoning_effort"] = reasoning_effort
+            kwargs["max_completion_tokens"] = max_tokens
+            logger.info(f"chat.completions(gpt-5) with reasoning_effort={reasoning_effort}, max_completion_tokens={max_tokens}")
+        else:
+            # gpt-4o and older: max_tokens is correct
+            kwargs["max_tokens"] = max_tokens
+
+        response = await self.client.chat.completions.create(**kwargs)
 
         content = response.choices[0].message.content or ""
         usage = {

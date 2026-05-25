@@ -14,6 +14,10 @@ from typing import Callable
 from ..models.topology import TopologyConfig, TopologyType, InternalEdge, EdgeType
 from ..models.agent import AgentConfig
 from ..benchmarks.travelplanner.prompts import SYSTEM_PROMPT
+from .prompts_paper_style import (
+    ORCHESTRATOR_BASE_SYSTEM,
+    SUB_AGENT_BASE_SYSTEM,
+)
 
 
 DEFAULT_MODEL = "gpt-5"
@@ -103,39 +107,28 @@ def independent_preset(model: str = DEFAULT_MODEL, n: int = N_WORKERS, temperatu
 # ---------------------------------------------------------------------------
 def centralized_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasoning_effort: str = "minimal") -> tuple[TopologyConfig, list[AgentConfig]]:
     topo_id = "pdf-centralized"
-    leader = _agent(
-        "cen-leader", "Leader", "Leader",
-        "You are the orchestrator coordinating Member-1, Member-2, Member-3. "
-        "Decompose the trip-planning task into focused subtasks and assign "
-        "each to a member with '[ASSIGN:Member-i] <subtask>'. Across rounds "
-        "you may: (a) refine a member's previous output by reassigning them, "
-        "(b) if cross-member context would help, relay one member's findings "
-        "to another with a follow-up subtask (e.g., 'Given the flight arrival "
-        "at 14:46 from Member-1, find a hotel with check-in available that "
-        "afternoon'), (c) request a constraint check across partial results, "
-        "or (d) finalize by synthesizing all members' outputs into the "
-        "complete plan in the required output format that satisfies all "
-        "task constraints. If the synthesized plan violates a constraint, "
-        "reassign a refined subtask to the relevant member before finalizing.",
-        topo_id, model, temperature, reasoning_effort,
+    # Paper-style: orchestrator base frame + sub-agent base frame.
+    # `{task_instance}` is left as a literal placeholder here; the
+    # CentralizedExecutor fills it with the user's styled query at run time.
+    leader = AgentConfig(
+        id="cen-leader", name="Leader", instructions=ORCHESTRATOR_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Leader",
     )
-    m1 = _agent(
-        "cen-m1", "Member-1", "Member",
-        "You are Member-1. Handle the subtask the orchestrator assigns you "
-        "and return focused findings for that subtask.",
-        topo_id, model, temperature, reasoning_effort,
+    m1 = AgentConfig(
+        id="cen-m1", name="Member-1", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
-    m2 = _agent(
-        "cen-m2", "Member-2", "Member",
-        "You are Member-2. Handle the subtask the orchestrator assigns you "
-        "and return focused findings for that subtask.",
-        topo_id, model, temperature, reasoning_effort,
+    m2 = AgentConfig(
+        id="cen-m2", name="Member-2", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
-    m3 = _agent(
-        "cen-m3", "Member-3", "Member",
-        "You are Member-3. Handle the subtask the orchestrator assigns you "
-        "and return focused findings for that subtask.",
-        topo_id, model, temperature, reasoning_effort,
+    m3 = AgentConfig(
+        id="cen-m3", name="Member-3", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
     edges = [
         _edge("cen-e1", leader.id, m1.id, EdgeType.BIDIRECTIONAL),
@@ -195,52 +188,28 @@ def decentralized_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, r
 # ---------------------------------------------------------------------------
 def hybrid_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasoning_effort: str = "minimal") -> tuple[TopologyConfig, list[AgentConfig]]:
     topo_id = "pdf-hybrid"
-    manager = _agent(
-        "hyb-mgr", "Manager", "Manager",
-        "You are the manager of a hybrid team coordinating Worker-1, "
-        "Worker-2, Worker-3 with a lateral peer channel. Decompose the "
-        "trip-planning task into focused subtasks and assign each to a "
-        "worker with '[ASSIGN:Worker-i] <subtask>'. Across rounds you may: "
-        "(a) refine a worker's previous output by reassigning them, "
-        "(b) if cross-worker context would help, relay one worker's "
-        "findings to another with a follow-up subtask (e.g., 'Given the "
-        "flight arrival at 14:46 from Worker-1, find a hotel with check-in "
-        "available that afternoon'), (c) if direct coordination is needed, "
-        "trigger lateral exchange between two or more workers with "
-        "'[PEER:Worker-i,Worker-j,...] <focus>' (e.g., reconcile flight "
-        "arrival with hotel check-in), or (d) finalize with '[FINAL "
-        "SYNTHESIS]' followed by the complete plan in the required output "
-        "format that satisfies all task constraints. If the synthesized "
-        "plan violates a constraint, reassign a refined subtask to the "
-        "relevant worker before finalizing.",
-        topo_id, model, temperature, reasoning_effort,
+    # Paper-style: same orchestrator + sub-agent frames as centralized. PEER
+    # affordance lives in the HierarchicalExecutor's coordination prompt
+    # variant (ORCHESTRATOR_COORDINATION_USER_HYBRID), not in the persona.
+    manager = AgentConfig(
+        id="hyb-mgr", name="Manager", instructions=ORCHESTRATOR_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Manager",
     )
-    w1 = _agent(
-        "hyb-w1", "Worker-1", "Worker",
-        "You are Worker-1. Handle the subtask the manager assigns you and "
-        "return focused findings for that subtask. When the manager "
-        "initiates a [PEER:Worker-i,Worker-j,...] round that lists you, "
-        "exchange intermediate findings with the other listed workers to "
-        "coordinate constraints.",
-        topo_id, model, temperature, reasoning_effort,
+    w1 = AgentConfig(
+        id="hyb-w1", name="Worker-1", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Worker",
     )
-    w2 = _agent(
-        "hyb-w2", "Worker-2", "Worker",
-        "You are Worker-2. Handle the subtask the manager assigns you and "
-        "return focused findings for that subtask. When the manager "
-        "initiates a [PEER:Worker-i,Worker-j,...] round that lists you, "
-        "exchange intermediate findings with the other listed workers to "
-        "coordinate constraints.",
-        topo_id, model, temperature, reasoning_effort,
+    w2 = AgentConfig(
+        id="hyb-w2", name="Worker-2", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Worker",
     )
-    w3 = _agent(
-        "hyb-w3", "Worker-3", "Worker",
-        "You are Worker-3. Handle the subtask the manager assigns you and "
-        "return focused findings for that subtask. When the manager "
-        "initiates a [PEER:Worker-i,Worker-j,...] round that lists you, "
-        "exchange intermediate findings with the other listed workers to "
-        "coordinate constraints.",
-        topo_id, model, temperature, reasoning_effort,
+    w3 = AgentConfig(
+        id="hyb-w3", name="Worker-3", instructions=SUB_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Worker",
     )
     edges = [
         _edge("hyb-e1", manager.id, w1.id, EdgeType.BIDIRECTIONAL),

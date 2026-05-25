@@ -1,0 +1,171 @@
+"""Paper-style prompt templates for centralized + hybrid topologies.
+
+4-stage flow per trial:
+  R1: orchestrator planning           -> JSON {subtasks: [{agent_id, objective, focus}]}
+  R1: sub-agent work + summarize       -> findings (no plan)
+  R2: orchestrator coordination (xN)   -> per-agent guidance string
+  R2: sub-agent refine + summarize     -> updated findings
+  R3: orchestrator synthesis           -> final plan (the only place with output schema)
+
+Hybrid variant lets the manager append `[PEER:Worker-i,Worker-j] <focus>` to
+a coordination guidance; executor parses it and runs a lateral exchange call
+on those two workers before their next refine.
+"""
+
+ORCHESTRATOR_BASE_SYSTEM = """You are a lead agent who orchestrates a team of travel-planning sub-agents.
+
+You coordinate multiple sub-agents to build one travel plan. Your responsibilities:
+1. PLANNING: Read the user's request and turn it into subtasks for your sub-agents.
+2. COORDINATION: Give each sub-agent guidance each round based on their progress and the rest of the team's findings.
+3. DECISION-MAKING: Decide when the team has enough to assemble the final plan.
+4. SYNTHESIS: Combine the sub-agents' findings into one final plan in the required output format.
+
+You have full visibility across all sub-agents and their findings.
+
+Build the plan using ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
+
+{task_instance}"""
+
+
+SUB_AGENT_BASE_SYSTEM = """You are a travel-planning sub-agent.
+
+You work as part of a team. Given guidance from the lead agent, work through your assigned part. Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent names, IDs, or prices.
+
+Stay within your assigned objective; report what you find rather than producing the whole plan.
+
+Reference data available to you:
+{task_instance}"""
+
+
+ORCHESTRATOR_PLANNING_USER = """Create a plan to work on this task.
+
+The user's request above describes how they want the work organized. Translate the organization in their request into subtasks as faithfully as you can, using the roles and channels available to you. Map each part of the user's stated structure to a subtask.
+
+Create exactly {num_agents} subtasks. Each subtask must be specific and focused.
+
+Return ONLY a JSON object with this structure:
+{{
+    "subtasks": [
+        {{
+            "agent_id": "agent_1",
+            "objective": "Specific objective for this sub-agent",
+            "focus": "The part of the user's stated structure this agent covers"
+        }}
+    ],
+    "reasoning": "For each subtask, state which part of the user's request it came from"
+}}"""
+
+
+ORCHESTRATOR_COORDINATION_USER = """ORCHESTRATOR COORDINATION TASK:
+
+CURRENT SITUATION:
+- Round: {round_num}
+- Agent: {agent_id}
+- Agent's objective: {agent_objective}
+- Agent's focus: {agent_strategy}
+
+AGENT'S PROGRESS:
+{agent_findings_summary}
+
+TEAM CONTEXT:
+{team_context}
+
+COORDINATION TASK:
+Based on this agent's progress and the team context, give {agent_id} specific guidance for their next step.
+
+Consider:
+- Is the agent making progress on its objective?
+- Are its findings usable for the final plan (valid candidates, prices, room rules, no duplicate restaurants or attractions across the team)?
+- Do its findings conflict with another agent's (budget overrun, schedule clash, same restaurant picked twice)?
+- Should it keep exploring, narrow down, change approach, or wrap up?
+
+Give one clear, actionable message (2-3 sentences max). No JSON, just the message."""
+
+
+# Hybrid variant: PEER is a first-class action, not an optional trailer.
+ORCHESTRATOR_COORDINATION_USER_HYBRID = """ORCHESTRATOR COORDINATION TASK:
+
+CURRENT SITUATION:
+- Round: {round_num}
+- Agent: {agent_id}
+- Agent's objective: {agent_objective}
+- Agent's focus: {agent_strategy}
+
+AGENT'S PROGRESS:
+{agent_findings_summary}
+
+TEAM CONTEXT:
+{team_context}
+
+COORDINATION TASK:
+You have TWO actions available for this turn — pick whichever fits the situation best:
+
+  ACTION 1 — Give {agent_id} specific guidance for their next step (1-3 sentences).
+
+  ACTION 2 — Trigger a lateral peer exchange so {agent_id} can reconcile directly with another worker BEFORE refining. End your message with a single line on its own:
+      [PEER:Worker-i,Worker-j] <focus of the exchange>
+    Use this when two workers' findings need direct alignment — timing conflicts (flight arrival vs hotel check-in), budget allocation across categories, hard-constraint cross-checks, conflicting picks (same restaurant chosen twice), etc.
+
+Consider:
+- Is the agent making progress on its objective?
+- Are its findings consistent with other agents' findings? (If two agents are in tension or duplicating work, ACTION 2 is often the right move.)
+- Should it explore more, narrow down, or coordinate laterally?
+
+Choose ONE action. No JSON, just the message — with the [PEER:...] trailer at the end if you choose ACTION 2."""
+
+
+ORCHESTRATOR_SYNTHESIS_USER = """SYNTHESIS TASK:
+Your team has gathered the findings below. Assemble them into one final travel plan.
+
+{all_findings}
+
+SYNTHESIS INSTRUCTIONS:
+- Use ONLY items that appear in the team's findings and the reference information. Do not invent names, IDs, or prices.
+- Across the whole trip, no restaurant may appear in more than one meal slot, and no attraction may appear on more than one day. The same accommodation across consecutive nights is expected.
+- The chosen accommodation must satisfy every house rule and the minimum-nights rule from the user's request.
+- Total cost (transportation + accommodation x nights + every meal) must not exceed the user's budget. If over, swap in cheaper items from the findings before finalizing.
+- If the user's request listed required cuisines, every one must appear at least once.
+
+Return the final plan as a Python list of dicts, one dict per day, padded with empty dicts {{}} to length 7. Days are 1-indexed.
+Each non-empty day-dict must contain these keys:
+  'days' (int), 'current_city' (str: 'CityX' or 'from CityX to CityY'),
+  'transportation' (str: 'Flight Number: F..., from X to Y, Departure Time: HH:MM, Arrival Time: HH:MM' / 'Self-driving, ...' / '-'),
+  'breakfast', 'lunch', 'dinner' (str: 'Restaurant Name, City' or '-'),
+  'attraction' (str: 'Name, City;Name, City;' or '-'),
+  'accommodation' (str: 'Hotel Name, City' or '-')
+
+Wrap the plan in a ```python ... ``` code block so it can be parsed automatically. Output only the code block."""
+
+
+SUB_AGENT_START_USER = """To start, here is your objective and guidance from the lead agent.
+Objective:
+{orchestrator_objective}
+Focus:
+{orchestrator_focus}
+
+Work on your objective using the reference information available to you in the system instructions.
+
+Then summarize your findings to be most useful to your team. Include the candidates you found with their relevant attributes (flight numbers and times and per-person price; accommodation name, price-per-night, room type, house rules, max occupancy, minimum nights; restaurant name and city; attraction name and city), what you confirmed, and any conclusions. Do not assemble the final plan."""
+
+
+SUB_AGENT_COORDINATION_USER = """Round {round_num} guidance from the lead agent:
+{orchestrator_guidance}
+
+Your previous findings:
+{previous_findings}
+{peer_section}
+Continue working on your objective and summarize your updated findings. Include candidates with their relevant attributes and any conclusions. Do not assemble the final plan."""
+
+
+SUB_AGENT_PEER_USER = """You are in a lateral peer exchange with {peer_agent_id}.
+
+The lead agent's instruction for this exchange:
+{peer_focus}
+
+Your current findings:
+{own_findings}
+
+{peer_agent_id}'s current findings:
+{peer_findings}
+
+Discuss with {peer_agent_id} based on the lead agent's instruction. Report what you reconcile or refine in your findings. Do not assemble the final plan."""

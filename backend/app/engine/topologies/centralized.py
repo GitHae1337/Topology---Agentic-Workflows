@@ -1,26 +1,38 @@
-from typing import Dict, List, AsyncGenerator, Tuple, Optional
+"""Paper-style 4-stage CentralizedExecutor.
+
+Per trial: 11 LLM calls total.
+  R1: Leader planning (JSON subtasks)              → 1 call
+  R1: Member-1/2/3 work + summarize (parallel)     → 3 calls
+  R2: Leader coordination per-Member (parallel)    → 3 calls
+  R2: Member-1/2/3 refine + summarize (parallel)   → 3 calls
+  R3: Leader synthesis (final plan only here)      → 1 call
+
+The output schema appears ONLY in the synthesis prompt — sub-agents return
+findings, not plans. The user's styled query is injected once via the
+`{task_instance}` placeholder of each agent's system prompt.
+"""
+from typing import Dict, List, AsyncGenerator, Tuple
 import asyncio
+import json
 import logging
 import re
 
 from .base import BaseTopologyExecutor
 from ...models import TopologyConfig, AgentConfig, ExecutionMessage
 from ...llm.base import LLMMessage
+from ...thinking_style.prompts_paper_style import (
+    ORCHESTRATOR_PLANNING_USER,
+    ORCHESTRATOR_COORDINATION_USER,
+    ORCHESTRATOR_SYNTHESIS_USER,
+    SUB_AGENT_START_USER,
+    SUB_AGENT_COORDINATION_USER,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class CentralizedExecutor(BaseTopologyExecutor):
-    """
-    Centralized (Leader-Member / Orchestrator-SubAgent) topology executor.
-
-    Behavior:
-    1. Round 1: Orchestrator receives task and decomposes it into subtasks for each sub-agent
-    2. Sub-agents execute their assigned subtasks in parallel
-    3. Round 2+: Orchestrator reviews results and assigns new tasks OR decides to synthesize
-    4. Sub-agents execute new tasks (with their previous output as context)
-    5. Final: Orchestrator synthesizes all findings into final answer (sub-agents not called)
-    """
+    """Paper-style centralized topology executor."""
 
     async def execute(
         self,
@@ -29,323 +41,233 @@ class CentralizedExecutor(BaseTopologyExecutor):
         input_message: str,
         conversation_history: List[Dict[str, str]] = None,
     ) -> AsyncGenerator[ExecutionMessage, None]:
-        logger.info(f"Starting centralized execution with {len(agents)} agents")
-        logger.info(f"Conversation history: {len(conversation_history) if conversation_history else 0} messages")
-        if conversation_history:
-            for i, msg in enumerate(conversation_history):
-                logger.info(f"  History[{i}]: {msg.get('role', 'unknown')}: {msg.get('content', '')[:100]}...")
+        logger.info(f"Starting centralized (paper-style) with {len(agents)} agents")
 
-        # Build history context for prompts
-        history_context = self.build_history_context(conversation_history) if conversation_history else ""
-        logger.info(f"History context length: {len(history_context)} chars")
-
-        # Find leader (orchestrator) and member agents
-        leader_agent = None
-        member_agents = []
+        leader = None
+        members: List[AgentConfig] = []
         for agent_id in topology.agents:
-            agent = agents.get(agent_id)
-            if not agent:
+            a = agents.get(agent_id)
+            if not a:
                 continue
-            if agent.topology_role == "Leader":
-                leader_agent = agent
-            elif agent.topology_role == "Member":
-                member_agents.append(agent)
+            if a.topology_role == "Leader":
+                leader = a
+            elif a.topology_role == "Member":
+                members.append(a)
 
-        if not leader_agent:
-            logger.error("No leader agent found in centralized topology")
-            yield self.create_message("system", "user", "Error: No leader agent found")
+        if leader is None or not members:
+            yield self.create_message("system", "user", "Error: missing leader or members")
             return
 
-        if not member_agents:
-            logger.error("No member agents found in centralized topology")
-            yield self.create_message("system", "user", "Error: No member agents found")
-            return
+        # Split input_message into reference + styled_query.
+        # Orchestrator's system prompt gets BOTH (it is the only agent allowed
+        # to read the user's styled request). Sub-agents' system prompt gets
+        # ONLY the reference data — the styled query is intentionally hidden
+        # from them so it only reaches their behaviour through the leader's
+        # planning + coordination guidance (user msgs).
+        reference_block, styled_query = self._split_input(input_message)
+        orch_ref_and_query = self._build_orch_ref_and_query(reference_block, styled_query)
+        sub_ref_only = reference_block
+        leader = leader.model_copy(update={
+            "instructions": leader.instructions.format(task_instance=orch_ref_and_query)
+        })
+        members = [
+            m.model_copy(update={"instructions": m.instructions.format(task_instance=sub_ref_only)})
+            for m in members
+        ]
 
-        logger.info(f"Leader: {leader_agent.name}, Members: {[s.name for s in member_agents]}")
-
-        # Use max_turns directly as max_rounds
-        max_rounds = topology.max_turns
-        current_round = 0
-
-        # Track each agent's output history
-        agent_histories: Dict[str, List[str]] = {agent.id: [] for agent in member_agents}
-
-        # Track all round results for orchestrator context
-        all_round_results: List[Dict[str, str]] = []
-
-        # Build sub-agent info for orchestrator
-        agent_names = [agent.name for agent in member_agents]
-        agent_info = "\n".join([
-            f"- {agent.name}: {agent.instructions[:100]}..." if agent.instructions else f"- {agent.name}"
-            for agent in member_agents
-        ])
-
-        # ============================================================
-        # Round 1: Orchestrator decomposes task
-        # ============================================================
-        current_round += 1
-        logger.info(f"Starting round {current_round}: Task decomposition")
-
-        decomposition_prompt = f"""You are the orchestrator coordinating a team of sub-agents.
-
-{history_context}Available Sub-Agents:
-{agent_info}
-
-Current Task: {input_message}
-
-Your job is to decompose this task into subtasks and assign each subtask to a specific sub-agent.
-{f"Note: Consider the previous conversation context when decomposing the task." if history_context else ""}
-
-IMPORTANT: You must respond in this exact format, with one [ASSIGN:...] line per sub-agent listed above (do not skip any):
-{chr(10).join(f"[ASSIGN:{name}] <subtask for this agent>" for name in agent_names)}
-
-Decompose the task now and assign subtasks to your sub-agents."""
-
-        orchestrator_response = await self.call_agent(
-            leader_agent,
-            [LLMMessage(role="user", content=decomposition_prompt)],
+        # ============== R1: Leader planning ==============
+        planning_user = ORCHESTRATOR_PLANNING_USER.format(num_agents=len(members))
+        planning_response = await self.call_agent(
+            leader, [LLMMessage(role="user", content=planning_user)]
         )
-
         yield self.create_message(
-            leader_agent.name, "all", orchestrator_response,
-            {"round": current_round, "type": "decomposition"}
+            leader.name, "all", planning_response,
+            {"round": 1, "type": "planning"},
         )
 
-        # Parse subtask assignments
-        subtasks = self._parse_assignments(orchestrator_response, member_agents)
+        subtasks = self._parse_planning_json(planning_response, members)
+        # Fallback: if JSON parse failed for some member, give them the styled query as objective.
+        for m in members:
+            if m.id not in subtasks:
+                subtasks[m.id] = {
+                    "objective": styled_query or "Build a complete trip plan candidate.",
+                    "focus": "(fallback: planning JSON missing for this member)",
+                }
 
-        # If parsing failed, assign the original task to all agents
-        if not subtasks:
-            logger.warning("Could not parse assignments, using original task for all agents")
-            subtasks = {agent.id: input_message for agent in member_agents}
+        # ============== R1: Members work in parallel ==============
+        r1_findings = await self._members_work_r1(members, subtasks)
+        for mid, output in r1_findings.items():
+            agent = next(m for m in members if m.id == mid)
+            yield self.create_message(
+                agent.name, leader.name, output,
+                {"round": 1, "type": "findings"},
+            )
 
-        # Execute sub-agents in parallel
-        round_results = await self._execute_agents_parallel(
-            member_agents, subtasks, agent_histories, current_round, input_message
+        # ============== R2: Leader coordination per Member (parallel) ==============
+        r2_guidance = await self._leader_coordinate_per_member(
+            leader, members, subtasks, r1_findings
         )
-
-        # Yield messages for each agent response
-        for agent_id, response in round_results.items():
-            agent = agents.get(agent_id)
-            if agent:
-                yield self.create_message(
-                    agent.name, leader_agent.name, response,
-                    {"round": current_round, "type": "subtask_result"}
-                )
-
-        all_round_results.append(round_results.copy())
-
-        # ============================================================
-        # Round 2+: Orchestrator reviews and assigns new tasks or synthesizes
-        # ============================================================
-        while current_round < max_rounds:
-            current_round += 1
-            logger.info(f"Starting round {current_round}: Review and reassign")
-
-            # Build context from all previous rounds
-            results_context = self._build_results_context(all_round_results, agents)
-
-            review_prompt = f"""You are the orchestrator coordinating a team of sub-agents.
-
-Original Task: {input_message}
-
-Results from previous rounds:
-{results_context}
-
-Review these results carefully. You must decide ONE of the following:
-
-OPTION 1 - SYNTHESIZE NOW (preferred if possible):
-If the sub-agents have provided enough information to answer the original task, or if their findings are consistent and complete, respond ONLY with:
-[FINAL SYNTHESIS]
-<your comprehensive synthesis of all findings>
-
-OPTION 2 - REQUEST MORE WORK (only if truly necessary):
-If there are significant gaps, contradictions, or missing critical information that cannot be resolved without additional work, assign new tasks:
-[ASSIGN:AgentName] <specific new task>
-
-IMPORTANT: Prefer [FINAL SYNTHESIS] unless there is a clear, specific reason to continue. Do not request more work just to be thorough - synthesize when you have enough to answer the task.
-
-What is your decision?"""
-
-            orchestrator_response = await self.call_agent(
-                leader_agent,
-                [LLMMessage(role="user", content=review_prompt)],
-            )
-
+        for mid, guidance in r2_guidance.items():
+            target = next(m for m in members if m.id == mid)
             yield self.create_message(
-                leader_agent.name, "all", orchestrator_response,
-                {"round": current_round, "type": "review"}
+                leader.name, target.name, guidance,
+                {"round": 2, "type": "coordination", "target": target.name},
             )
 
-            # Check if orchestrator wants to synthesize
-            if "[FINAL SYNTHESIS]" in orchestrator_response.upper():
-                logger.info(f"Orchestrator initiated final synthesis at round {current_round}")
-                break
-
-            # Parse new assignments
-            subtasks = self._parse_assignments(orchestrator_response, member_agents)
-
-            if not subtasks:
-                # No assignments parsed, assume synthesis is needed
-                logger.info(f"No new assignments, proceeding to synthesis at round {current_round}")
-                break
-
-            # Execute sub-agents in parallel with their new tasks
-            round_results = await self._execute_agents_parallel(
-                member_agents, subtasks, agent_histories, current_round, input_message
-            )
-
-            # Yield messages for each agent response
-            for agent_id, response in round_results.items():
-                agent = agents.get(agent_id)
-                if agent:
-                    yield self.create_message(
-                        agent.name, leader_agent.name, response,
-                        {"round": current_round, "type": "subtask_result"}
-                    )
-
-            all_round_results.append(round_results.copy())
-
-            # Check for early termination
-            if topology.early_termination:
-                if self.check_early_termination(orchestrator_response):
-                    logger.info(f"Early termination at round {current_round}")
-                    break
-
-        # ============================================================
-        # Final Synthesis: Orchestrator synthesizes all findings
-        # ============================================================
-        # Only do explicit synthesis if we didn't already get [FINAL SYNTHESIS]
-        if "[FINAL SYNTHESIS]" not in orchestrator_response.upper():
-            logger.info("Orchestrator performing final synthesis")
-
-            results_context = self._build_results_context(all_round_results, agents)
-
-            synthesis_prompt = f"""You are the orchestrator. The task execution is complete.
-
-Original Task: {input_message}
-
-All Results from Sub-Agents:
-{results_context}
-
-Synthesize all findings into a final, comprehensive answer to the original task."""
-
-            final_synthesis = await self.call_agent(
-                leader_agent,
-                [LLMMessage(role="user", content=synthesis_prompt)],
-            )
-
+        # ============== R2: Members refine in parallel ==============
+        r2_findings = await self._members_refine_r2(members, r2_guidance, r1_findings)
+        for mid, output in r2_findings.items():
+            agent = next(m for m in members if m.id == mid)
             yield self.create_message(
-                leader_agent.name, "output", final_synthesis,
-                {"round": current_round, "type": "final_synthesis"}
+                agent.name, leader.name, output,
+                {"round": 2, "type": "findings"},
             )
 
-        logger.info(f"Centralized execution completed in {current_round} rounds")
+        # ============== R3: Leader synthesis ==============
+        all_findings_str = self._format_all_findings(members, r1_findings, r2_findings)
+        synth_user = ORCHESTRATOR_SYNTHESIS_USER.format(all_findings=all_findings_str)
+        final_plan = await self.call_agent(
+            leader, [LLMMessage(role="user", content=synth_user)]
+        )
+        yield self.create_message(
+            leader.name, "output", final_plan,
+            {"round": 3, "type": "final_synthesis"},
+        )
+        logger.info("Centralized (paper-style) execution complete")
 
-    def _parse_assignments(
-        self,
-        orchestrator_response: str,
-        member_agents: List[AgentConfig]
-    ) -> Dict[str, str]:
-        """Parse [ASSIGN:AgentName] subtask assignments from orchestrator response."""
-        subtasks: Dict[str, str] = {}
+    # ---------- helpers ----------
 
-        # Pattern: [ASSIGN:AgentName] followed by the task
-        pattern = r'\[ASSIGN:([^\]]+)\]\s*(.+?)(?=\[ASSIGN:|$)'
-        matches = re.findall(pattern, orchestrator_response, re.DOTALL | re.IGNORECASE)
+    def _split_input(self, input_message: str) -> Tuple[str, str]:
+        """Returns (reference_block, styled_query) split on '\\n\\nQuery: '."""
+        marker = "\n\nQuery: "
+        idx = input_message.find(marker)
+        if idx == -1:
+            return input_message, ""
+        return input_message[:idx], input_message[idx + len(marker):]
 
-        for agent_name, task in matches:
-            agent_name = agent_name.strip()
-            task = task.strip()
+    def _build_orch_ref_and_query(self, reference_block: str, styled_query: str) -> str:
+        """Orchestrator-only task_instance: reference + styled query (the only
+        agent allowed to see the user's styled request)."""
+        if reference_block and styled_query:
+            return f"{reference_block}\n\nUser's styled request:\n{styled_query}"
+        if styled_query:
+            return f"User's styled request:\n{styled_query}"
+        return reference_block
 
-            # Find matching agent
-            for agent in member_agents:
-                if agent.name.lower() == agent_name.lower():
-                    subtasks[agent.id] = task
-                    break
+    def _parse_planning_json(
+        self, response: str, members: List[AgentConfig]
+    ) -> Dict[str, Dict[str, str]]:
+        """Parse Leader's JSON planning output → {member_id: {objective, focus}}.
+        Returns empty dict on parse failure (caller falls back per member)."""
+        match = re.search(r"\{[\s\S]*\}", response)
+        if not match:
+            logger.warning("Planning JSON not found in Leader response")
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            m2 = re.search(r'"subtasks"\s*:\s*(\[[\s\S]*?\])', response)
+            if not m2:
+                logger.warning("Planning JSON malformed and no subtasks array recoverable")
+                return {}
+            try:
+                data = {"subtasks": json.loads(m2.group(1))}
+            except json.JSONDecodeError:
+                logger.warning("Planning JSON subtasks array malformed")
+                return {}
 
-        logger.info(f"Parsed {len(subtasks)} assignments from orchestrator")
-        return subtasks
-
-    async def _execute_agents_parallel(
-        self,
-        member_agents: List[AgentConfig],
-        subtasks: Dict[str, str],
-        agent_histories: Dict[str, List[str]],
-        current_round: int,
-        input_message: str,
-    ) -> Dict[str, str]:
-        """Execute all sub-agents in parallel with their assigned tasks."""
-
-        async def execute_single_agent(agent: AgentConfig) -> Tuple[str, str]:
-            subtask = subtasks.get(agent.id)
-            if not subtask:
-                return agent.id, ""
-
-            # Build prompt with agent's previous output for context
-            previous_outputs = agent_histories.get(agent.id, [])
-            reference_only = self.extract_reference(input_message)
-
-            if previous_outputs:
-                previous_context = "\n".join([
-                    f"[Your Round {i+1} Output]: {output}"
-                    for i, output in enumerate(previous_outputs)
-                ])
-                prompt = f"""You are a sub-agent following the orchestrator's instructions.
-
-{reference_only}
-
-Your previous outputs:
-{previous_context}
-
-Subtask from orchestrator: {subtask}
-
-Execute this subtask. Provide your response."""
-            else:
-                prompt = f"""You are a sub-agent following the orchestrator's instructions.
-
-{reference_only}
-
-Subtask from orchestrator: {subtask}
-
-Execute this subtask. Provide your response."""
-
-            response = await self.call_agent(
-                agent,
-                [LLMMessage(role="user", content=prompt)],
-            )
-
-            # Store this response in agent's history
-            agent_histories[agent.id].append(response)
-
-            return agent.id, response
-
-        # Only execute agents that have assigned tasks
-        agents_with_tasks = [agent for agent in member_agents if agent.id in subtasks]
-
-        if not agents_with_tasks:
+        subtasks_list = data.get("subtasks") if isinstance(data, dict) else None
+        if not isinstance(subtasks_list, list):
             return {}
 
-        # Execute all in parallel
-        tasks = [execute_single_agent(agent) for agent in agents_with_tasks]
-        results = await asyncio.gather(*tasks)
+        result: Dict[str, Dict[str, str]] = {}
+        for i, sub in enumerate(subtasks_list):
+            if i >= len(members):
+                break
+            if not isinstance(sub, dict):
+                continue
+            result[members[i].id] = {
+                "objective": str(sub.get("objective", "")),
+                "focus": str(sub.get("focus", "")),
+            }
+        return result
 
-        return {agent_id: response for agent_id, response in results if response}
-
-    def _build_results_context(
+    async def _members_work_r1(
         self,
-        all_round_results: List[Dict[str, str]],
-        agents: Dict[str, AgentConfig]
+        members: List[AgentConfig],
+        subtasks: Dict[str, Dict[str, str]],
+    ) -> Dict[str, str]:
+        async def work_one(m: AgentConfig) -> Tuple[str, str]:
+            sub = subtasks.get(m.id, {"objective": "", "focus": ""})
+            user_msg = SUB_AGENT_START_USER.format(
+                orchestrator_objective=sub["objective"],
+                orchestrator_focus=sub["focus"],
+            )
+            output = await self.call_agent(m, [LLMMessage(role="user", content=user_msg)])
+            return m.id, output
+
+        results = await asyncio.gather(*[work_one(m) for m in members])
+        return dict(results)
+
+    async def _leader_coordinate_per_member(
+        self,
+        leader: AgentConfig,
+        members: List[AgentConfig],
+        subtasks: Dict[str, Dict[str, str]],
+        r1_findings: Dict[str, str],
+    ) -> Dict[str, str]:
+        async def coord_for(target: AgentConfig) -> Tuple[str, str]:
+            sub = subtasks.get(target.id, {"objective": "", "focus": ""})
+            team_context_parts = []
+            for other in members:
+                if other.id == target.id:
+                    continue
+                team_context_parts.append(
+                    f"[{other.name}]: {r1_findings.get(other.id, '(no findings)')}"
+                )
+            team_context = "\n\n".join(team_context_parts) if team_context_parts else "(none)"
+            user_msg = ORCHESTRATOR_COORDINATION_USER.format(
+                round_num=2,
+                agent_id=target.name,
+                agent_objective=sub["objective"],
+                agent_strategy=sub["focus"],
+                agent_findings_summary=r1_findings.get(target.id, "(no findings yet)"),
+                team_context=team_context,
+            )
+            guidance = await self.call_agent(leader, [LLMMessage(role="user", content=user_msg)])
+            return target.id, guidance
+
+        results = await asyncio.gather(*[coord_for(m) for m in members])
+        return dict(results)
+
+    async def _members_refine_r2(
+        self,
+        members: List[AgentConfig],
+        r2_guidance: Dict[str, str],
+        r1_findings: Dict[str, str],
+    ) -> Dict[str, str]:
+        async def refine_one(m: AgentConfig) -> Tuple[str, str]:
+            user_msg = SUB_AGENT_COORDINATION_USER.format(
+                round_num=2,
+                orchestrator_guidance=r2_guidance.get(m.id, "(no guidance)"),
+                previous_findings=r1_findings.get(m.id, "(no previous findings)"),
+                peer_section="",
+            )
+            output = await self.call_agent(m, [LLMMessage(role="user", content=user_msg)])
+            return m.id, output
+
+        results = await asyncio.gather(*[refine_one(m) for m in members])
+        return dict(results)
+
+    def _format_all_findings(
+        self,
+        members: List[AgentConfig],
+        r1_findings: Dict[str, str],
+        r2_findings: Dict[str, str],
     ) -> str:
-        """Build a formatted string of all round results for orchestrator context."""
-        context_parts = []
-
-        for round_num, round_results in enumerate(all_round_results, start=1):
-            round_text = f"=== Round {round_num} Results ==="
-            for agent_id, response in round_results.items():
-                agent = agents.get(agent_id)
-                if agent:
-                    round_text += f"\n[{agent.name}]: {response}"
-            context_parts.append(round_text)
-
-        return "\n\n".join(context_parts)
+        parts = []
+        for m in members:
+            parts.append(f"=== {m.name} ===")
+            parts.append(f"[Round 1 findings]\n{r1_findings.get(m.id, '(none)')}")
+            parts.append(f"[Round 2 findings]\n{r2_findings.get(m.id, '(none)')}")
+        return "\n\n".join(parts)

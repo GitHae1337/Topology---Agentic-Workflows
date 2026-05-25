@@ -17,6 +17,8 @@ from ..benchmarks.travelplanner.prompts import SYSTEM_PROMPT
 from .prompts_paper_style import (
     ORCHESTRATOR_BASE_SYSTEM,
     SUB_AGENT_BASE_SYSTEM,
+    INDEPENDENT_WORKER_BASE_SYSTEM,
+    INDEPENDENT_AGGREGATOR_BASE_SYSTEM,
 )
 
 
@@ -75,21 +77,27 @@ def sas_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasoning_e
 # ---------------------------------------------------------------------------
 def independent_preset(model: str = DEFAULT_MODEL, n: int = N_WORKERS, temperature: float = 0.7, reasoning_effort: str = "minimal") -> tuple[TopologyConfig, list[AgentConfig]]:
     topo_id = "pdf-independent"
+    # Paper-style framing (ybkim95/agent-scaling subagent.yaml structure):
+    # each worker is an autonomous solver; the aggregator synthesizes their
+    # plans. `{worker_index}`, `{num_workers}`, `{task_instance}` are left as
+    # literal placeholders here — the IndependentExecutor fills them at run time.
     workers: list[AgentConfig] = []
     for i in range(n):
-        workers.append(_agent(
-            f"ind-w{i+1}", f"Worker-{i+1}", "Worker",
-            f"You are Worker-{i+1} of {n}. You see only the user query (no other "
-            f"workers' output). Produce a complete trip plan in the required "
-            f"format independently.",
-            topo_id, model, temperature, reasoning_effort,
+        worker_system = INDEPENDENT_WORKER_BASE_SYSTEM.replace(
+            "{worker_index}", str(i + 1)
+        ).replace("{num_workers}", str(n))
+        workers.append(AgentConfig(
+            id=f"ind-w{i+1}", name=f"Worker-{i+1}", instructions=worker_system,
+            model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+            topology_id=topo_id, topology_role="Worker",
         ))
-    aggregator = _agent(
-        "ind-agg", "Aggregator", "Aggregator",
-        f"You receive the {n} workers' independent plans. Synthesize them into a "
-        f"single final plan that satisfies every constraint, in the required "
-        f"format. Do not invent items not present in the workers' outputs.",
-        topo_id, model, temperature, reasoning_effort,
+    aggregator_system = INDEPENDENT_AGGREGATOR_BASE_SYSTEM.replace(
+        "{num_workers}", str(n)
+    )
+    aggregator = AgentConfig(
+        id="ind-agg", name="Aggregator", instructions=aggregator_system,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Aggregator",
     )
 
     topo = TopologyConfig(

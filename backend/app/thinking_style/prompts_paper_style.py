@@ -169,3 +169,60 @@ Your current findings:
 {peer_findings}
 
 Discuss with {peer_agent_id} based on the lead agent's instruction. Report what you reconcile or refine in your findings. Do not assemble the final plan."""
+
+
+# ============================================================================
+# Independent topology (paper-style framing; output schema preserved per agent)
+# ============================================================================
+# `{{...}}` are doubled so .format(task_instance=...) leaves them intact.
+# SAS topology is NOT updated here — its preset stays on the legacy framing.
+
+_TRAVEL_PLAN_OUTPUT_SCHEMA = """OUTPUT FORMAT (strict, machine-evaluated):
+Return a Python list of dicts, one dict per day. Days are 1-indexed. Pad the list with empty dicts {{}} so the total length is exactly 7 (3-day trip → 3 day-dicts + 4 empty dicts).
+
+Each non-empty day-dict MUST contain these keys:
+  - 'days': int (1..N)
+  - 'current_city': str  ('CityX' for in-city days, or 'from CityX to CityY' for travel days)
+  - 'transportation': str  (e.g. 'Flight Number: F1234567, from X to Y, Departure Time: HH:MM, Arrival Time: HH:MM' / 'Self-driving, from X to Y, duration: ..., distance: ..., cost: ...' / '-')
+  - 'breakfast', 'lunch', 'dinner': 'Restaurant Name, City' or '-'
+  - 'attraction': 'Name1, City;Name2, City;' or '-'  (semicolons separate; trailing semicolon ok)
+  - 'accommodation': 'Hotel Name, City' or '-'
+
+Rules:
+- Use '-' for fields not applicable (e.g. transportation '-' on in-city days; meals '-' after returning to origin).
+- All names must be exact substrings of what appears in the reference data.
+- A restaurant may appear in at most one meal slot across the entire trip; an attraction may appear in at most one day.
+- Total cost (transportation + accommodation x nights + meals) must not exceed the query's budget.
+- The accommodation must satisfy every house rule and the minimum-nights rule from the query.
+- If the query lists required cuisines, every one of them must appear at least once in the meals you pick.
+
+Wrap the final plan in a ```python ... ``` code block so it can be parsed automatically."""
+
+
+INDEPENDENT_WORKER_BASE_SYSTEM = """You are an intelligent travel-planning agent.
+
+You work as Independent Worker-{worker_index} of {num_workers} — no coordination with other workers, just solve the task end-to-end yourself. Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
+
+""" + _TRAVEL_PLAN_OUTPUT_SCHEMA + """
+
+{task_instance}"""
+
+
+INDEPENDENT_WORKER_START_USER = """Objective: Solve the task completely on your own.
+Focus: Independent worker {worker_index}.
+Begin!"""
+
+
+INDEPENDENT_AGGREGATOR_BASE_SYSTEM = """You are an aggregator that combines independent agents' plans.
+
+You receive {num_workers} workers' independent plans. Synthesize them into one final plan that satisfies every constraint. Use ONLY items present in workers' outputs and the reference information. Do not invent any names, IDs, or prices.
+
+""" + _TRAVEL_PLAN_OUTPUT_SCHEMA + """
+
+{task_instance}"""
+
+
+INDEPENDENT_AGGREGATOR_SYNTHESIS_USER = """Worker plans:
+{worker_plans_block}
+
+Synthesize the workers' plans into one final plan in the required output format. Resolve disagreements yourself; do not invent items absent from all workers' outputs."""

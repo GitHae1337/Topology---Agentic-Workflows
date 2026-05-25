@@ -226,3 +226,26 @@ INDEPENDENT_AGGREGATOR_SYNTHESIS_USER = """Worker plans:
 {worker_plans_block}
 
 Synthesize the workers' plans into one final plan in the required output format. Resolve disagreements yourself; do not invent items absent from all workers' outputs."""
+
+
+# ============================================================================
+# Chain topology (paper-style framing; output schema only at the final agent)
+# ============================================================================
+# Chain executor (chain.py) calls agents sequentially: Agent-1 -> Agent-2 ->
+# Agent-3, K=1 round, passing each agent's output to the next via the user
+# message. The executor also appends a "Round X/K. You are agent i/N..."
+# position info to the system prompt at call time. No {task_instance}
+# placeholder is needed here — the user message already carries the full task.
+
+CHAIN_AGENT_BASE_SYSTEM = """You are an intelligent travel-planning agent participating in a sequential pipeline.
+
+Build on or refine the previous agent's output and pass your work to the next agent. Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
+
+You do not need to produce the final formatted plan — that is the last agent's job. Focus on partial findings, candidate sets, constraint checks, or draft itineraries that the next agent can build on."""
+
+
+CHAIN_FINAL_AGENT_SYSTEM = """You are the final agent in a sequential travel-planning pipeline.
+
+Take the previous agent's draft and finalize it into the required output format. Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
+
+""" + _TRAVEL_PLAN_OUTPUT_SCHEMA

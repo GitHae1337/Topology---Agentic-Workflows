@@ -19,6 +19,8 @@ from .prompts_paper_style import (
     SUB_AGENT_BASE_SYSTEM,
     INDEPENDENT_WORKER_BASE_SYSTEM,
     INDEPENDENT_AGGREGATOR_BASE_SYSTEM,
+    CHAIN_AGENT_BASE_SYSTEM,
+    CHAIN_FINAL_AGENT_SYSTEM,
 )
 
 
@@ -235,12 +237,45 @@ def hybrid_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasonin
     return topo, [manager, w1, w2, w3]
 
 
+def chain_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasoning_effort: str = "minimal") -> tuple[TopologyConfig, list[AgentConfig]]:
+    """Chain (sequential pipeline) preset — 3 agents, K=1 round.
+    Output schema lives only at Agent-3 (the final agent)."""
+    topo_id = "pdf-chain"
+    a1 = AgentConfig(
+        id="chain-a1", name="Agent-1", instructions=CHAIN_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Agent",
+    )
+    a2 = AgentConfig(
+        id="chain-a2", name="Agent-2", instructions=CHAIN_AGENT_BASE_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Agent",
+    )
+    a3 = AgentConfig(
+        id="chain-a3", name="Agent-3", instructions=CHAIN_FINAL_AGENT_SYSTEM,
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Agent",
+    )
+    edges = [
+        _edge("chain-e1", a1.id, a2.id, EdgeType.UNIDIRECTIONAL),
+        _edge("chain-e2", a2.id, a3.id, EdgeType.UNIDIRECTIONAL),
+    ]
+    topo = TopologyConfig(
+        id=topo_id, type=TopologyType.CHAIN, name="Chain (PDF)",
+        agents=[a1.id, a2.id, a3.id], internal_edges=edges,
+        max_turns=1, timeout=300, early_termination=False,
+        start_agent_id=a1.id,
+    )
+    return topo, [a1, a2, a3]
+
+
 PDF_PRESETS: dict[str, Callable[..., tuple[TopologyConfig, list[AgentConfig]]]] = {
     "sas": sas_preset,
     "independent": independent_preset,
     "centralized": centralized_preset,
     "decentralized": decentralized_preset,
     "hybrid": hybrid_preset,
+    "chain": chain_preset,
 }
 
 

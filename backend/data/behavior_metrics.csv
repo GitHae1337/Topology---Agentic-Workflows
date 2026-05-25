@@ -1,4 +1,0 @@
-session_id,participant_id,task_id,session_started_at,total_edits,undo_count,redo_count,first_click_latency_seconds,session_duration_seconds,distinct_action_types,max_undo_stack_depth
-a8d52dd6-2c81-4928-acde-da1aae8e1de1,,,2026-04-28T01:09:51.286Z,42,3,0,,1043.205,6,39
-dfdf911e-b310-412b-8d8c-9f91f6c1c4a1,,,2026-04-28T05:00:54.353Z,20,1,0,,123.263,6,19
-a8d52dd6-2c81-4928-acde-da1aae8e1de1,,,2026-04-28T01:09:51.286Z,0,0,0,,40592.664,0,0

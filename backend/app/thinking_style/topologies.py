@@ -21,6 +21,8 @@ from .prompts_paper_style import (
     INDEPENDENT_AGGREGATOR_BASE_SYSTEM,
     CHAIN_AGENT_BASE_SYSTEM,
     CHAIN_FINAL_AGENT_SYSTEM,
+    DECENTRALIZED_PLANNER_BASE_SYSTEM,
+    DECENTRALIZED_PLANNER_STRATEGIES,
 )
 
 
@@ -158,26 +160,24 @@ def centralized_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, rea
 # ---------------------------------------------------------------------------
 def decentralized_preset(model: str = DEFAULT_MODEL, temperature: float = 0.7, reasoning_effort: str = "minimal") -> tuple[TopologyConfig, list[AgentConfig]]:
     topo_id = "pdf-decentralized"
-    a1 = _agent(
-        "dec-a1", "Planner-A", "Member",
-        "You are Planner-A. Round 1: propose your own complete plan. Round 2+: "
-        "you see all peers' plans, critique them, and produce a refined plan. "
-        "Final round: emit the consensus plan in the required format.",
-        topo_id, model, temperature, reasoning_effort,
+    # Paper-style framing — each planner gets a distinct strategy injected into
+    # the base system prompt's {planner_strategy} placeholder. MeshExecutor
+    # passes the full task in the user message of each round.
+    s = DECENTRALIZED_PLANNER_STRATEGIES
+    a1 = AgentConfig(
+        id="dec-a1", name="Planner-A", instructions=DECENTRALIZED_PLANNER_BASE_SYSTEM.replace("{planner_strategy}", s[0]),
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
-    a2 = _agent(
-        "dec-a2", "Planner-B", "Member",
-        "You are Planner-B. Round 1: propose your own complete plan. Round 2+: "
-        "you see all peers' plans, critique them, and produce a refined plan. "
-        "Final round: emit the consensus plan in the required format.",
-        topo_id, model, temperature, reasoning_effort,
+    a2 = AgentConfig(
+        id="dec-a2", name="Planner-B", instructions=DECENTRALIZED_PLANNER_BASE_SYSTEM.replace("{planner_strategy}", s[1]),
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
-    a3 = _agent(
-        "dec-a3", "Planner-C", "Member",
-        "You are Planner-C. Round 1: propose your own complete plan. Round 2+: "
-        "you see all peers' plans, critique them, and produce a refined plan. "
-        "Final round: emit the consensus plan in the required format.",
-        topo_id, model, temperature, reasoning_effort,
+    a3 = AgentConfig(
+        id="dec-a3", name="Planner-C", instructions=DECENTRALIZED_PLANNER_BASE_SYSTEM.replace("{planner_strategy}", s[2]),
+        model=model, temperature=temperature, reasoning_effort=reasoning_effort,
+        topology_id=topo_id, topology_role="Member",
     )
     edges = [
         _edge("dec-e1", a1.id, a2.id, EdgeType.BIDIRECTIONAL),

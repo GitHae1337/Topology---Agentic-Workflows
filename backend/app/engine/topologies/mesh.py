@@ -1,3 +1,21 @@
+"""Paper-style MeshExecutor (decentralized topology).
+
+Round mechanism mirrors Du et al. 2023 / ybkim95 agent-scaling:
+  R1     — each planner produces an independent candidate answer (parallel)
+  R2..d  — each planner sees ONLY the previous round's peer answers
+           (not cumulative) and may defend / refine / replace its answer
+  No mid-debate consensus early-termination check.
+
+Final aggregation differs from the paper: paper uses mechanical majority
+voting on identical-string match, which degenerates on TravelPlanner since
+plans are essentially never identical strings. We use an LLM-level synthesis
+call by the start agent (Planner-A) to combine the final-round answers into
+a single plan. The system-prompt level "deterministic vote selects output"
+phrasing remains for the planners — only the executor diverges here.
+
+Per trial calls: N × max_rounds debate + 1 synthesis. With N=3, max_rounds=3
+that's 10 calls.
+"""
 from typing import Dict, List, AsyncGenerator, Tuple
 import asyncio
 import logging
@@ -5,20 +23,17 @@ import logging
 from .base import BaseTopologyExecutor
 from ...models import TopologyConfig, AgentConfig, ExecutionMessage
 from ...llm.base import LLMMessage
+from ...thinking_style.prompts_paper_style import (
+    DECENTRALIZED_R1_USER,
+    DECENTRALIZED_R2PLUS_USER,
+    DECENTRALIZED_FINAL_SYNTHESIS_USER,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class MeshExecutor(BaseTopologyExecutor):
-    """
-    Mesh (Fully Connected) topology executor.
-
-    Behavior:
-    1. Round 1: All agents receive the task simultaneously (parallel) and produce initial responses
-    2. Round 2+: All agents see ALL previous responses (including their own) with cumulative history
-    3. Repeat until consensus, early termination, or max rounds reached
-    4. Final: Majority voting/synthesis across all agents' final outputs
-    """
+    """Paper-style decentralized debate with LLM-level final synthesis."""
 
     async def execute(
         self,
@@ -27,170 +42,92 @@ class MeshExecutor(BaseTopologyExecutor):
         input_message: str,
         conversation_history: List[Dict[str, str]] = None,
     ) -> AsyncGenerator[ExecutionMessage, None]:
-        logger.info(f"Starting mesh (debate) execution with {len(agents)} agents")
+        logger.info(f"Starting mesh (paper-style) execution with {len(agents)} agents")
 
-        if not topology.start_agent_id:
-            logger.error("No start agent specified for mesh topology")
-            yield self.create_message("system", "user", "Error: Start agent not specified")
-            return
-
-        agent_list = [agents.get(aid) for aid in topology.agents if agents.get(aid)]
+        agent_list: List[AgentConfig] = [agents[aid] for aid in topology.agents if aid in agents]
         if len(agent_list) < 2:
-            logger.error("Mesh topology requires at least 2 agents")
-            yield self.create_message("system", "user", "Error: Need at least 2 agents")
+            yield self.create_message("system", "user", "Error: Mesh needs at least 2 agents")
+            return
+        if not topology.start_agent_id or topology.start_agent_id not in agents:
+            yield self.create_message("system", "user", "Error: Mesh needs a valid start_agent_id")
             return
 
-        logger.info(f"Agents: {[a.name for a in agent_list]}")
-
-        # Use max_turns directly as max_rounds for Mesh topology
         max_rounds = topology.max_turns
-        current_round = 0
+        # round_responses[round_num] = {agent_id: response_string}
+        round_responses: List[Dict[str, str]] = []
 
-        # Cumulative history: list of round responses
-        all_rounds_history: List[Dict[str, str]] = []
+        # ===================== Round 1: independent candidates =====================
+        logger.info(f"Round 1 / {max_rounds}: independent candidates")
+        r1_user = DECENTRALIZED_R1_USER
 
-        # ============================================================
-        # Round 1: All agents receive the same task in parallel
-        # ============================================================
-        current_round += 1
-        logger.info(f"Starting debate round {current_round}")
+        async def r1_one(agent: AgentConfig) -> Tuple[str, str]:
+            # The full task (reference + styled query) is in input_message; we wrap
+            # it the same way chain/sas do: as the user's "Original task:" prefix.
+            user_msg = self.format_user_prompt_with_task(input_message, r1_user)
+            resp = await self.call_agent(agent, [LLMMessage(role="user", content=user_msg)])
+            return agent.id, resp
 
-        async def get_initial_response(agent: AgentConfig) -> Tuple[str, str]:
-            """Get initial response from an agent."""
-            prompt = f"""You are participating in a multi-agent debate/discussion.
-
-Topic/Task: {input_message}
-
-This is Round 1. Provide your initial perspective, analysis, or solution. Be thorough but concise."""
-
-            response = await self.call_agent(agent, [LLMMessage(role="user", content=prompt)])
-            return agent.id, response
-
-        # Execute all agents in parallel
-        initial_tasks = [get_initial_response(agent) for agent in agent_list]
-        initial_results = await asyncio.gather(*initial_tasks)
-
-        # Store round 1 responses
-        round_responses: Dict[str, str] = {}
-        for agent_id, response in initial_results:
-            round_responses[agent_id] = response
-            agent = agents.get(agent_id)
-            yield self.create_message(agent.name, "all", response, {"round": current_round, "type": "initial"})
-
-        all_rounds_history.append(round_responses.copy())
-
-        # ============================================================
-        # Round 2+: Debate rounds with full visibility and cumulative history
-        # ============================================================
-        while current_round < max_rounds:
-            current_round += 1
-            logger.info(f"Starting debate round {current_round}")
-
-            # Build cumulative history text from ALL previous rounds
-            history_text = self._build_cumulative_history(all_rounds_history, agents)
-
-            async def get_debate_response(agent: AgentConfig) -> Tuple[str, str]:
-                """Get debate response from an agent with full history visibility."""
-                prompt = f"""You are participating in a multi-agent debate/discussion.
-
-Topic/Task: {input_message}
-
-This is Round {current_round}. Here is the complete history of all previous rounds:
-
-{history_text}
-
-Based on all perspectives shared so far:
-1. Consider points you agree or disagree with
-2. Refine your position if needed
-3. Provide your updated response
-
-If you believe consensus has been reached, start your response with "CONSENSUS REACHED:" followed by the agreed conclusion."""
-
-                response = await self.call_agent(agent, [LLMMessage(role="user", content=prompt)])
-                return agent.id, response
-
-            # Execute all agents in parallel
-            debate_tasks = [get_debate_response(agent) for agent in agent_list]
-            debate_results = await asyncio.gather(*debate_tasks)
-
-            # Store this round's responses
-            new_responses: Dict[str, str] = {}
-            for agent_id, response in debate_results:
-                new_responses[agent_id] = response
-                agent = agents.get(agent_id)
-                yield self.create_message(agent.name, "all", response, {"round": current_round, "type": "debate"})
-
-            # Accumulate history
-            all_rounds_history.append(new_responses.copy())
-            round_responses = new_responses
-
-            # Check for consensus (majority of agents indicate consensus)
-            consensus_count = sum(1 for r in round_responses.values() if "CONSENSUS REACHED" in r.upper())
-            if consensus_count >= len(agent_list) // 2 + 1:
-                logger.info(f"Consensus reached at round {current_round}")
-                break
-
-            # Check for early termination
-            if topology.early_termination:
-                if all(self.check_early_termination(r) for r in round_responses.values()):
-                    logger.info(f"Early termination at round {current_round}")
-                    break
-
-        # ============================================================
-        # Final: Majority voting / synthesis
-        # ============================================================
-        start_agent = agents.get(topology.start_agent_id)
-        if start_agent:
-            # Format all final outputs for majority voting
-            final_outputs_text = "\n\n".join([
-                f"[{agents.get(aid).name}]: {resp}"
-                for aid, resp in round_responses.items()
-                if agents.get(aid)
-            ])
-
-            synthesis_prompt = f"""The debate has concluded after {current_round} rounds.
-
-Original Task: {input_message}
-
-Here are all agents' final positions:
-
-{final_outputs_text}
-
-Your task:
-1. Identify the majority answer or common consensus among the agents
-2. If there's clear agreement, state the agreed answer
-3. If there are differences, synthesize the best answer based on the strongest arguments
-
-Provide the final answer that best represents the collective conclusion."""
-
-            synthesis = await self.call_agent(
-                start_agent,
-                [LLMMessage(role="user", content=synthesis_prompt)],
-            )
-
+        r1_results = await asyncio.gather(*[r1_one(a) for a in agent_list])
+        r1_responses: Dict[str, str] = dict(r1_results)
+        round_responses.append(r1_responses)
+        for aid, resp in r1_responses.items():
             yield self.create_message(
-                start_agent.name,
-                "output",
-                synthesis,
-                {"round": current_round, "type": "majority_voting"}
+                agents[aid].name, "all", resp,
+                {"round": 1, "type": "initial"},
             )
 
-        logger.info(f"Mesh execution completed in {current_round} rounds")
+        # ===================== Round 2..d: peer-aware refine ======================
+        for r in range(2, max_rounds + 1):
+            logger.info(f"Round {r} / {max_rounds}: peer-aware refine")
+            prev_round = round_responses[-1]
 
-    def _build_cumulative_history(
-        self,
-        all_rounds_history: List[Dict[str, str]],
-        agents: Dict[str, AgentConfig]
-    ) -> str:
-        """Build a formatted string of cumulative history from all rounds."""
-        history_parts = []
+            async def rN_one(agent: AgentConfig) -> Tuple[str, str]:
+                # Previous-round-only peer context (paper sec. 6.1).
+                peer_blocks = []
+                for other in agent_list:
+                    if other.id == agent.id:
+                        continue
+                    ans = prev_round.get(other.id, "")
+                    if not ans:
+                        continue
+                    peer_blocks.append(
+                        f"--- Peer answer from {other.name} (round {r - 1}) ---\n{ans}"
+                    )
+                peer_context = "\n\n".join(peer_blocks) if peer_blocks else "(no peer responses available)"
+                round_msg = DECENTRALIZED_R2PLUS_USER.format(
+                    round_num=r, max_rounds=max_rounds, peer_context=peer_context,
+                )
+                user_msg = self.format_user_prompt_with_task(input_message, round_msg)
+                resp = await self.call_agent(agent, [LLMMessage(role="user", content=user_msg)])
+                return agent.id, resp
 
-        for round_num, round_responses in enumerate(all_rounds_history, start=1):
-            round_text = f"=== Round {round_num} ==="
-            for agent_id, response in round_responses.items():
-                agent = agents.get(agent_id)
-                if agent:
-                    round_text += f"\n[{agent.name}]: {response}"
-            history_parts.append(round_text)
+            rN_results = await asyncio.gather(*[rN_one(a) for a in agent_list])
+            this_round: Dict[str, str] = dict(rN_results)
+            round_responses.append(this_round)
+            for aid, resp in this_round.items():
+                yield self.create_message(
+                    agents[aid].name, "all", resp,
+                    {"round": r, "type": "debate"},
+                )
 
-        return "\n\n".join(history_parts)
+        # ===================== Final aggregation: LLM synthesis ===================
+        start_agent = agents[topology.start_agent_id]
+        final_round = round_responses[-1]
+        # Build the final-answers block in canonical agent-list order.
+        all_final_block = "\n\n".join(
+            f"=== {a.name} (final, round {len(round_responses)}) ===\n{final_round.get(a.id, '(no final answer)')}"
+            for a in agent_list
+        )
+        synthesis_user = DECENTRALIZED_FINAL_SYNTHESIS_USER.format(
+            n_rounds=len(round_responses),
+            all_final_answers_block=all_final_block,
+        )
+        synthesis_input = self.format_user_prompt_with_task(input_message, synthesis_user)
+        final = await self.call_agent(
+            start_agent, [LLMMessage(role="user", content=synthesis_input)]
+        )
+        yield self.create_message(
+            start_agent.name, "output", final,
+            {"round": max_rounds, "type": "final_synthesis"},
+        )
+        logger.info(f"Mesh (paper-style) execution complete: {max_rounds} debate rounds + 1 synthesis")

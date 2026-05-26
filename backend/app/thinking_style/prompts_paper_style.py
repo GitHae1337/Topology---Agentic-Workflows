@@ -249,3 +249,62 @@ CHAIN_FINAL_AGENT_SYSTEM = """You are the final agent in a sequential travel-pla
 Take the previous agent's draft and finalize it into the required output format. Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
 
 """ + _TRAVEL_PLAN_OUTPUT_SCHEMA
+
+
+# ============================================================================
+# Decentralized topology (paper-style round structure + LLM final synthesis)
+# ============================================================================
+# Paper (Du et al. 2023 / ybkim95 agent-scaling) round mechanism is mirrored:
+#   - 3 planners with DISTINCT strategies
+#   - R1: independent candidate answer
+#   - R2..d: each agent sees ONLY the previous round's peer answers
+#     (not cumulative) and may defend / refine / replace
+#   - No mid-debate consensus early-termination check
+# Aggregation differs from paper: paper uses mechanical majority voting on
+# identical-string match, which degenerates on TravelPlanner (plans are never
+# identical strings). We keep an LLM-level synthesis call by the start agent
+# (Planner-A) as the final aggregation.
+#
+# Each planner produces a complete plan, so the output schema lives in their
+# system prompt. MeshExecutor passes the full task in the user message of each
+# round, so {task_instance} placeholder is NOT used here.
+
+DECENTRALIZED_PLANNER_BASE_SYSTEM = """You are an intelligent travel-planning agent participating in a multi-agent debate.
+
+You work alongside 2 other planners. Each round you produce a complete trip plan; in later rounds you also see your peers' answers from the previous round and may defend / refine / replace your own answer. After the last debate round, a deterministic majority vote across the agents' final answers selects the system output.
+
+Use ONLY the candidate flights, restaurants, accommodations and attractions in the reference information. Do not invent any names, IDs, or prices.
+
+""" + _TRAVEL_PLAN_OUTPUT_SCHEMA + """
+
+YOUR DEBATE STRATEGY:
+{planner_strategy}"""
+
+
+# Three distinct strategies cycled across N peer planners (paper sec. 6.1).
+DECENTRALIZED_PLANNER_STRATEGIES = [
+    "Analyze the problem systematically and produce a complete solution.",
+    "Explore the problem broadly, identify the root cause, then solve it.",
+    "Focus on the target outcome and work backwards to a solution.",
+]
+
+
+DECENTRALIZED_R1_USER = """Round 1: produce your best candidate answer to the task independently. Submit your final answer for this round when ready."""
+
+
+DECENTRALIZED_R2PLUS_USER = """Debate round {round_num} of {max_rounds}.
+
+Below are your peers' answers from the previous round. Read them carefully. Identify points where you agree, points where they erred, and points where you missed something. Then produce your updated final answer for this round. You may defend your previous answer, refine it, or replace it.
+
+{peer_context}
+
+Produce your updated final answer now."""
+
+
+DECENTRALIZED_FINAL_SYNTHESIS_USER = """The debate has concluded after {n_rounds} round(s).
+
+Below are all planners' final answers:
+
+{all_final_answers_block}
+
+Synthesize ONE final plan from these answers. Identify points of agreement to retain, resolve points of disagreement using the strongest arguments, and use ONLY items present in the planners' answers and the reference information. Return the final plan in the required output format."""

@@ -14,7 +14,7 @@ from typing import Callable
 from ..models.topology import TopologyConfig, TopologyType, InternalEdge, EdgeType
 from ..models.agent import AgentConfig
 from ..benchmarks.travelplanner.prompts import SYSTEM_PROMPT
-from .prompts_paper_style import (
+from .prompts_active import (
     ORCHESTRATOR_BASE_SYSTEM,
     SUB_AGENT_BASE_SYSTEM,
     INDEPENDENT_WORKER_BASE_SYSTEM,

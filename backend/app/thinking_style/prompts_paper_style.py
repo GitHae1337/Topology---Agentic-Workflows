@@ -281,11 +281,14 @@ YOUR DEBATE STRATEGY:
 {planner_strategy}"""
 
 
-# Three distinct strategies cycled across N peer planners (paper sec. 6.1).
+# Three distinct strategies cycled across N peer planners.
+# v10 update: derive perspectives from the user's stated angles when present,
+# fall back to a default lens otherwise. v2 mini-test (10 outlier task, 2026-05-26)
+# showed this flip decentralized alignment diff from -0.10 (anti) to +0.14 (aligned).
 DECENTRALIZED_PLANNER_STRATEGIES = [
-    "Analyze the problem systematically and produce a complete solution.",
-    "Explore the problem broadly, identify the root cause, then solve it.",
-    "Focus on the target outcome and work backwards to a solution.",
+    "Take the first perspective the user mentions in their request. If no specific angle is stated, prioritize a cost / efficiency lens.",
+    "Take the second perspective the user mentions in their request. If no second angle is stated, prioritize a feasibility / schedule lens.",
+    "Take the third perspective the user mentions in their request. If no third angle is stated, prioritize a rule-safety / constraint-satisfaction lens.",
 ]
 
 

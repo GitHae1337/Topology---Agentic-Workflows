@@ -19,7 +19,7 @@ import re
 from .base import BaseTopologyExecutor
 from ...models import TopologyConfig, AgentConfig, ExecutionMessage
 from ...llm.base import LLMMessage
-from ...thinking_style.prompts_paper_style import (
+from ...thinking_style.prompts_active import (
     ORCHESTRATOR_PLANNING_USER,
     ORCHESTRATOR_COORDINATION_USER_HYBRID,
     ORCHESTRATOR_SYNTHESIS_USER,

@@ -148,12 +148,17 @@ function uniqueModelKey(label, fileName) {
 
 // ---------- jsonl ingest ----------
 function addJsonlFile(text, fileName) {
+  // Whole-text path (kept for small files / md drop). Streaming path uses addJsonlRows directly.
   const rows = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
     let r; try { r = JSON.parse(line); } catch (e) { continue; }
     rows.push(r);
   }
+  addJsonlRows(rows, fileName);
+}
+
+function addJsonlRows(rows, fileName) {
   if (!rows.length) { alert("No rows parsed from " + fileName); return; }
   const label = rows[0].model || fileName.replace(/\.jsonl$/i, "");
   const key = uniqueModelKey(label, fileName);
@@ -523,12 +528,45 @@ mdInput.addEventListener('change', () => {
 
 document.getElementById('clear-all').addEventListener('click', () => { if (confirm('Clear all loaded files?')) clearAll(); });
 
-function handleJsonlFiles(fileList) {
+async function handleJsonlFiles(fileList) {
+  // Stream-parse each file line-by-line so the whole text never sits in
+  // memory at once. Required for big combined files (>200MB) where the
+  // legacy readAsText path hits the browser's string-size limit.
   for (const f of fileList) {
-    const reader = new FileReader();
-    reader.onload = () => addJsonlFile(reader.result, f.name);
-    reader.readAsText(f);
+    try {
+      const rows = await streamParseJsonl(f);
+      addJsonlRows(rows, f.name);
+    } catch (err) {
+      console.error('Failed to stream-parse', f.name, err);
+      alert('Failed to parse ' + f.name + ': ' + err.message);
+    }
   }
+}
+
+async function streamParseJsonl(file) {
+  const rows = [];
+  const stream = file.stream().pipeThrough(new TextDecoderStream());
+  const reader = stream.getReader();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      const s = line.replace(/\r$/, '');
+      if (s.trim()) {
+        try { rows.push(JSON.parse(s)); } catch (e) { /* skip malformed */ }
+      }
+    }
+  }
+  const tail = buffer.replace(/\r$/, '').trim();
+  if (tail) {
+    try { rows.push(JSON.parse(tail)); } catch (e) { /* skip */ }
+  }
+  return rows;
 }
 
 // ---------- drag/drop ----------

@@ -23,7 +23,7 @@ import logging
 from .base import BaseTopologyExecutor
 from ...models import TopologyConfig, AgentConfig, ExecutionMessage
 from ...llm.base import LLMMessage
-from ...thinking_style.prompts_paper_style import (
+from ...thinking_style.prompts_active import (
     DECENTRALIZED_R1_USER,
     DECENTRALIZED_R2PLUS_USER,
     DECENTRALIZED_FINAL_SYNTHESIS_USER,
